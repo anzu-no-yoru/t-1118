@@ -1,0 +1,2580 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex,nofollow,noarchive">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>ボイ！</title>
+<!--
+  ボイ！（仮）── 音だけで遊ぶブラインドサッカーの一人称 ── ステップ1（最小実装）
+  方針の正本：Game/Soccer/方針.md（§9 ステップ1）
+  音は全部 Web Audio でその場で作る（音のファイルなし）。方向と距離は PannerNode（HRTF）。
+  確かめ方：
+    ?watch      上から見たピッチと音の波紋（見る人・撮影用）
+    ?bot        自動で遊ぶ（?watch&bot で見る）。 ?fast=N で N 倍速
+    ?seed=N     置き場所を固定
+    ?lv=1..5    暗さ（1＝波紋あり、5＝真っ暗）。L キーで 1⇔5
+    ?lang=en    言葉を英語に
+    ?type=attack1|attack2|defend  場面を固定（ステップ2：相手1人・相手2人・守り）。 ?opp=0 で相手なし
+    ?tut        はじめてのお手本をもう一度（ふつうは1回だけ・localStorage voy_tut）
+  コンソール：
+    calib(10)     音だけで向いて Space＝ズレ（度）を記録
+    lrtest(10)    左右の聞き分けを10回
+    simRounds(20,seed)  自動で20本（音なし・すぐ終わる）→ 到達とゴールの数
+-->
+<style>
+:root{--bg:#000;--fg:#e9e9e9;--mbg:#0f141b;--mfg:#e6e9ee;--acc:#e8c45a;--dim:#8b939e}
+html,body{margin:0;height:100%;position:fixed;inset:0;overscroll-behavior:none;background:var(--bg);color:var(--fg);font-family:system-ui,"Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif;overflow:hidden}
+canvas{display:block;position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;touch-action:none}
+#menu{position:fixed;inset:0;display:flex;background:var(--mbg);color:var(--mfg);overflow:auto;padding:16px;box-sizing:border-box}
+#menu .card{max-width:660px;line-height:1.75;margin:auto}   /* margin:auto＝はみ出しても上が切れない中央寄せ */
+#menu h1{font-size:64px;margin:0 0 4px;letter-spacing:.04em}
+#menu .sub{color:var(--acc);font-size:18px;margin:0 0 10px}
+#menu .ear{font-size:30px;font-weight:700;margin:0 0 12px;line-height:1.35}
+#menu .see{font-size:14px;color:var(--dim);margin:0 0 14px}
+#menu .modes{display:flex;gap:12px;flex-wrap:wrap;margin:6px 0 8px}
+#menu .modes button{flex:1 1 220px;font-size:20px;padding:16px 18px}
+#menu #btnBlind{background:#2a3442;color:#e6e9ee}
+#menu #btnPK{background:#1f4d33;color:#e6f2ea}
+#menu #btnEar{background:#2a3442;color:#e6e9ee}
+#menu #btnDaily{background:#4a3a78;color:#f0ecff}
+#menu #btnM3{background:#7a3030;color:#ffecec}
+#card{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:rgba(6,8,12,.95);padding:14px;box-sizing:border-box;z-index:5}
+#card img{max-width:92vw;max-height:64vh;border-radius:14px}
+#card .cb{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+#card button{font:inherit;font-size:18px;padding:12px 20px;border-radius:12px;border:0;background:var(--acc);color:#1a1405;font-weight:700;cursor:pointer}
+#card button.sub{background:#2a3442;color:#e6e9ee}
+#card p{margin:0;color:var(--dim);font-size:13px}
+#menu .net{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0 2px}
+#menu .net button{font-size:15px;padding:9px 14px;background:#2a3442;color:#e6e9ee}
+#menu .net input{font:inherit;font-size:18px;width:7.5em;padding:8px 10px;border-radius:10px;border:1px solid #48525f;background:#0b0f14;color:#e6e9ee;letter-spacing:.2em}
+#menu p{margin:0 0 12px}
+#menu table{border-collapse:collapse;margin:8px 0 18px;font-size:15px}
+#menu td{padding:3px 14px 3px 0;vertical-align:top}
+#menu td:first-child{color:var(--acc);white-space:nowrap;font-weight:600}
+#menu button{font:inherit;font-size:20px;padding:12px 26px;border-radius:12px;border:0;background:var(--acc);color:#1a1405;font-weight:700;cursor:pointer}
+#menu a{color:var(--dim)}
+#menu .small{font-size:13px;color:var(--dim);margin-top:16px}
+#msg{position:fixed;left:16px;right:16px;top:34%;text-align:center;color:#8d949d;font-size:22px;line-height:1.6;pointer-events:none;white-space:pre-line}
+#hud{position:fixed;left:12px;bottom:10px;color:#3a4048;font-size:13px;pointer-events:none;white-space:pre}
+#live{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+</style>
+</head>
+<body role="application">
+<canvas id="cv" tabindex="0"></canvas>
+<div id="msg"></div>
+<div id="hud"></div>
+<div id="live" aria-live="assertive"></div>
+<div id="menu"><div class="card" id="menuCard"></div></div>
+<div id="card"><img id="cardImg" alt=""><div class="cb"><button id="cShare"></button><button id="cAgain" class="sub"></button><button id="cMenu" class="sub"></button></div><p id="cHint"></p></div>
+<script>
+'use strict';
+/* ====================== 設定・言葉 ====================== */
+const Q = new URLSearchParams(location.search);
+const LANG = ((Q.get('lang') || navigator.language || 'ja').toLowerCase().startsWith('ja')) ? 'ja' : 'en';
+const WATCH = Q.has('watch'), BOT = Q.has('bot');
+const FAST = Math.max(1, Math.min(50, +Q.get('fast') || 1));
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const wrap = a => { while (a > Math.PI) a -= 2 * Math.PI; while (a <= -Math.PI) a += 2 * Math.PI; return a; };
+const angDiff = (a, b) => wrap(a - b);
+let LV = clamp(Math.round(+Q.get('lv') || 1), 1, 5);
+const SEED0 = Q.has('seed') ? ((+Q.get('seed')) >>> 0) : ((Date.now() % 1e9) >>> 0);
+let FLIP = false; try { FLIP = localStorage.getItem('voy_flip') === '1'; } catch (e) {}
+let VOICE = true; try { VOICE = localStorage.getItem('voy_voice') !== '0'; } catch (e) {}   // false＝声を出さず aria-live だけ（読み上げソフトを使う人）
+
+const T = {
+  ja: {
+    sub: '音だけで遊ぶ、ブラインドサッカー',
+    lead: ['イヤホンをつけて、<b>目を閉じて</b>遊ぶサッカーです。',
+      '鈴の入ったボールの音で場所を見つけ、足元で運んで、ゴールを決めます。',
+      'ゴールの裏で、ガイドがポストを「カン、カン」と叩いています。ボールは止まると鳴りません。止まって2秒たつと、審判が軽く転がしてくれます。'],
+    keys: [['W ／ ↑', '進む（S ／ ↓ で下がる）'], ['A D ／ ← →', 'ちょん 1 回で 30°（時計の 1 時間）回る・長押しで回り続ける'], ['Z ／ C', '横歩き（正面を向いたまま 左 ／ 右へ）'], ['Shift', 'ダッシュ（息があらくなる）'],
+      ['Space', 'ちょん＝小さく蹴り出す、長押し＝強く蹴る'], ['E', 'ガイドに聞く（ゴールの向きと距離）'], ['Q', '今どこ？（監督が 自分の場所・ゴール・板 を言う）'],
+      ['何も押さない', '止まって聞く'], ['L', '暗さ 1→5（1＝見える練習・コーチの声／5＝真っ暗）'], ['R ／ Esc', 'やり直し ／ 止める'],
+      ['V', 'ボイ！（相手のボールを取りに行く前に叫ぶ）'], ['P', 'PK たいけつ（最初の画面）'], ['O ／ J', 'PK 友だちと：合言葉をつくる ／ 合言葉で入る'], ['T ／ M', 'きょうの1本（世界共通の場面）／ 3分マッチ（点の取り合い）。最初の画面'], ['K', '耳のけいこ（鈴・ゴール・板を耳だけで当てる。最初の画面）'], ['H', '遊び方を声で聞く'], ['N', '声 ⇔ 読み上げソフトだけ']],
+    start: 'Space で始める',
+    appLabel: 'ボイ！ 音だけで遊ぶブラインドサッカー。H で遊び方を声で聞く。1 か Space で見える練習、5 で目をとじて始める。はじめての人は見える練習から。',
+    help: '遊び方。はじめての人へ。まず 1 か Space で、見える練習から始めてください。レベル 1 は ちゃんと見えて、コーチの声も教えてくれます。慣れたら L で暗くしていきましょう。目をとじて遊ぶときは 5 です。イヤホンをつけて、目を閉じて遊ぶサッカーです。鈴の入ったボールの音で場所を見つけ、足元で運んで、ゴールを決めます。ゴールの裏で、ガイドがポストをカン、カンと叩いています。ボールは止まると鳴りません。止まって2秒たつと、審判が軽く転がします。キー。W か上の矢印で進む。S か下の矢印で下がる。A と D か、左右の矢印で向きを変える。1 回ちょんと押すと、ちょうど 30 度、時計の 1 時間ぶん回って、カチと鳴る。コーチは向きを時計で言う。2 時なら右へ 2 回、11 時なら左へ 1 回、6 時はうしろ。Shift でダッシュ。Space をちょんと押すと小さく蹴り出す。長く押すと強く蹴る。E でガイドに、ゴールの向きと距離を聞く。Q で監督に、今どこにいるかを聞く。真っ暗のときは、前のカン、カンと、うしろの自分のゴールの、GK の手拍子が目印。板に近づくと、その側から風のような音がする。V でボイと叫ぶ。相手のボールを取りに行く前に、必ず叫んでください。黙って当たるとファウルです。相手は、ボイと叫びながら寄ってきます。何も押さなければ、止まって聞ける。L で暗さを 1 から 5 へ。N で、声と読み上げソフトだけの切りかえ。最初の画面の K で、耳のけいこ。T で、きょうの1本。M で、3分マッチ。R でやり直し。Esc で止める。ボイとは、スペイン語で、行くよ、という意味です。ブラインドサッカーでは、ボールを取りに行く選手が必ずこう叫ぶ決まりです。みんな目が見えないので、黙って寄せると危ないから。黙って当たるとファウルです。Space で始めます。',
+    pausedSay: '止めています。Space で続けます。H で遊び方。',
+    voiceOn: '声で読みます。', voiceOff: '声を止めました。読み上げソフトだけで読みます。',
+    touch: 'タッチ', swapped: '左右入れかえ中',
+    rt: { solo: 'ウォームアップ。相手はいません。', tut: '', attack1: '相手が1人、ゴールの前で待っています。ボイの声が来たら、よけてゴールへ。', attack2: '相手が2人。ボイの声をよけて、ゴールへ。',
+      defend: '次は守り。相手がボールを持って、こちらのゴールへ来ます。鈴の音を追いかけ、相手に寄る直前に V でボイ。取り返したら、向こうのゴールへ。' },
+    tname: { pk: 'PK', solo: '1人', tut: 'お手本', attack1: '相手1人', attack2: '相手2人', defend: '守り' },
+    foul: (k, m, why) => (why === 'expired' ? 'ファウル！ ボイと叫んでから時間がたっていました。' : 'ファウル！ ボイと言わずに当たりました。') + `60秒以内は ${m}本中 ${k}本。`,
+    taken: '取られた', got: '取った',
+    net: { host: '🌐 PK 友だちと：合言葉をつくる', join: '入る', ph: '合言葉 4けた', prep: 'じゅんび中…', code: c => `合言葉は「${c}」。友だちに伝えて、入ってくるのを待っています…`,
+      codeSay: c => `合言葉は、${c}。`, ok: 'つながりました！', okWait: 'つながりました！ 始まるのを待っています…', joining: 'つないでいます…', need4: '合言葉は 4けたの数字です',
+      notFound: 'つながりません。合言葉を確かめてください', noOne: 'その合言葉の人がいません', noLib: 'つなぐ道具を読めませんでした（ネットを確かめてください）',
+      fail: t => `つなげませんでした（${t}）。お試しのページや会社のネットではつながりません`, lost: 'つながりが切れました',
+      full: 'もう 2人 います。', noPause: 'ネットの たいけつ中は 止められません。', typeCode: '合言葉を入れて、Enter。' },
+    pk: { btn: '🥅 PK たいけつ', youKickLong: 'あなたが蹴る番。ねらいは、← か → で 5度ずつ。GK の、こい！の声と、ガイドのカン、カンを聞いて、Space を長く押して蹴る。',
+      youKick: 'あなたが蹴る番。', youKeepLong: 'あなたが GK。カチを聞いて、ドンのあと すぐ ← → か Space で飛ぶ。', youKeep: 'あなたが GK の番。',
+      score: (me, them, n) => `${n}本目。${me} 対 ${them}。`, R: '右', L: '左', C: 'まんなか', stay: '動かず', diveR: '右', diveL: '左', diveC: 'まんなか',
+      res: { goal: ['ゴール！', '決められた。'], save: ['止められた。', 'セーブ！'], miss: ['外れた！', '外れた！'], post: ['ポスト！', 'ポスト！'] },
+      kickLine: (kd, gd, res) => `${kd}に蹴った。GKは${gd}。${res}`, keepLine: (kd, gd, res) => `${kd}に来た。あなたは${gd}。${res}`,
+      now: (me, them) => `${me} 対 ${them}。`,
+      over: (me, them) => me > them ? `${me} 対 ${them} で、勝ち！` : me < them ? `${me} 対 ${them} で、負け。` : `${me} 対 ${them} で、引き分け。`,
+      streak: n => `PK ${n}連勝！`, again: 'Space で もう一度。',
+      help: 'PK たいけつ。蹴る人と GK を、1本ごとに交代して 5本ずつ。蹴るときは、← か → で、ねらいを 5度ずつ変える。GK の、こい！の声と、ガイドのカン、カンが、ゴールの目印。Space を長く押して蹴る。弱いと止められやすく、強すぎると外れやすい。GK のときは、蹴る人のカチが聞こえる。ドンのあと すぐ、← か → か Space で飛ぶ。' },
+    pos: { own: '自陣', mid: '真ん中', att: '敵陣', left: '左寄り', center: '中央', right: '右寄り',
+      fmt: (z, l, hg, dg, hb, db) => `${z}、${l}。ゴールは${hg}時、${dg}メートル。板は${hb}時、${db}メートル。` },
+    earTop: 'イヤホンを つけて、目を とじて',
+    seeNote: 'はじめての人へ：レベル 1 は ちゃんと見えます。コーチの声も教えてくれます。慣れたら L で暗くしていきましょう（2＝半透明・3＝輪郭だけ・4＝波紋だけ・5＝真っ暗）。',
+    coach: { R: '右', L: '左', there: 'そこ！', twelve: m => `12時、まっすぐ、${m}メートル`, ball: (h, m) => `ボール、${h}時、${m}メートル`,
+      opp: (h, m) => `相手のボール、${h}時、${m}メートル`, callVoy: 'V で、ボイ！',
+      haveGoal: h => `持ってる。ゴール、${h}時`, haveStraight: 'ゴール、12時、まっすぐ', shootNow: 'まっすぐ、蹴れ！',
+      fine: sd => `ゴール、ほぼ12時。長押しで少し${sd}` },
+    tutClock: (what, h, n, key) => h === 12 ? `${what}は12時、まっすぐ。` : `${what}は${h}時。${key} を ${n}回 押して。`, tutBall: 'ボール', tutGoal: 'ゴール',
+    arrowBall: 'ボール', arrowGoal: 'ゴール',
+    goSee: '見える練習です。画面を見ながら、音も聞いてください。ボールを探して、ゴールへ。',
+    btnSee: '👀 見える練習（レベル 1）', btnBlind: '🙈 目をとじて（レベル 5）', btnHint: 'はじめての人は「見える練習」から。キーなら 1 か Space＝見える練習、5＝目をとじて。',
+    darker: '次は L で、1 段 暗くしてみよう。',
+    ballLeft: 'ボールが離れた', hold: '⚽ 持ってる',
+    resume: 'つづける',
+    tut: ['', 'ボールの方を向く。ピッと鳴ったら、ボールの方です。', 'そこ！ W で進む。', 'そのまま W。ボールがついてくる。',
+      'ゴールの方を向く。ポンと鳴ったら、ゴールの方です。', 'Space を長く押して、蹴る。'],
+    tutFirst: 'はじめての お手本です。', tutAligned: 'もう、ゴールの方を向いています。', tutBack: 'ボールが離れました。もう一度、ボールの方を向く。',
+    tutRetry: 'もう一度。Space か R で、お手本をやり直します。',
+    newRec: '新記録！',
+    tutDone: 'ゴール！ これが、ボイです。次から本番。はじめの2本は1人で、そのあと、ボイと叫ぶ相手が出てきます。Space で次へ。',
+    head: { goal: 'ゴール！', timeup: 'タイムアップ。', lost: '決められました。' },
+    foulHead: why => why === 'expired' ? 'ファウル！ ボイと叫んでから時間がたっていました。' : 'ファウル！ ボイと言わずに当たりました。',
+    body: (s, n, k) => `${s}秒、タッチ${n}回、取られ${k}回。`,
+    stars: n => n ? `星${n}つ。` : '星なし。',
+    streak: n => `${n}本 連続！`, oppLv: n => `相手の強さ ${n}。`,
+    tallyTxt: (k, m) => `60秒以内は ${m}本中 ${k}本。`,
+    nextKeys: 'Space で次、R でもう一度。',
+    missR: '右に外れた！', missL: '左に外れた！', post: 'ポスト！', left30: 'あと30秒！',
+    lost: (k, m) => `決められました。60秒以内は ${m}本中 ${k}本。`,
+    about: 'このスポーツについて（日本ブラインドサッカー協会）', aboutUrl: 'https://www.b-soccer.jp/',
+    small: 'お試し版。ルールの数字は IBSA Blind Football Laws of the Game 2025–2029。', credit: '声：VOICEVOX:冥鳴ひまり',
+    voy: 'ボイ（Voy）＝スペイン語で「行くよ！」。ブラインドサッカーでは、ボールを取りに行く選手が必ずこう叫ぶ決まり。みんな目が見えないので、黙って寄せると危ないから。黙って当たるとファウル。',
+    lrIntro: 'イヤホンがなければ、左右だけ分かれば大丈夫です。左右のテストです。鈴が鳴ったほうの矢印キーを押してください。左なら左、右なら右。',
+    lrMsg: '左右テスト\n鈴が鳴ったほうの ← か → を押す\n（Enter でとばす）',
+    lrOK: '左右よし。', lrFlip: '左右が逆のようです。こちらで入れかえました。', lrRetry: 'もう一度やります。',
+    go: '目を閉じてください。ボールを探して、ゴールへ。', next: '次の1本。',
+    goal: (s, n, k, m) => `ゴール！ ${s}秒、タッチ${n}回。60秒以内は ${m}本中 ${k}本。`,
+    timeup: (k, m) => `タイムアップ。60秒以内は ${m}本中 ${k}本。`, out: 'アウト。',
+    straight: 'まっすぐ', slR: '少し右', slL: '少し左', right: '右', left: '左', backR: 'うしろ。右から回って', backL: 'うしろ。左から回って',
+    askFmt: (d, m) => `${d}、${m}メートル！`, askShoot: m => `まっすぐ、${m}メートル。打て！`,
+    calIntro: '向きのテストです。鈴の鳴るほうを向いて、Space を押してください。',
+    calMsg: (i, n) => `向きのテスト ${i}/${n}\n鈴のほうを向いて Space`,
+    calDone: (a, k, n) => `終わり。ズレは平均 ${a}度。15度以内は ${n}回中 ${k}回。`,
+    lrDone: (k, n) => `左右テスト、${n}回中 ${k}回正解。`,
+    earBtn: '👂 耳のけいこ（1分）', earTitle: '耳のけいこ', earIntro: '耳のけいこです。3つの練習をします。',
+    ear: ['1つめ。鈴の鳴るほうを向いて、Space。', '2つめ。カン、カンと鳴る、ゴールのほうを向いて、Space。',
+      '3つめ。まっすぐ前に、板があります。W をちょんちょんと押して、少しずつ進む。風の音がしたら、板はすぐそこ。ぶつかる前に止まって、Space。'],
+    earDeg: n => `${n}度。`, earCm: n => `板まで、${n}センチ。`, earHit: 'ぶつかった。',
+    earDone: r => `終わり。鈴は平均 ${r.bell}度。ゴールは平均 ${r.goal}度。` + (r.wall != null ? `板は平均 ${r.wall}センチ。` : '') + (r.hits ? `ぶつかったのは ${r.hits}回。` : ''),
+    earBetter: '前より、よくなりました。', earAgain: 'Space で もう一度。Esc で やめる。',
+    earMsg: (d, i, n) => ['鈴のほうを向いて Space', 'カン、カンのゴールを向いて Space', 'W で少しずつ進み、板の手前で Space'][d] + `\n耳のけいこ ${d + 1}/3 ・ ${i}/${n}`,
+    earSum: r => `鈴 ±${r.bell}°・ゴール ±${r.goal}°` + (r.wall != null ? `・板 ${r.wall}cm` : '') + (r.hits ? `・ぶつかった ${r.hits}回` : ''),
+    earLast: '前回の耳のけいこ：', earKeys: 'Space＝もう一度 ・ Esc＝やめる',
+    dailyBtn: '📅 きょうの1本', m3Btn: '⚽ 3分マッチ',
+    dailyGo: 'きょうの1本。世界中が、同じ場面です。相手が1人。ボイの声をよけて、ゴールへ。', dailyDone: 'きょうの分は、もう数えました。',
+    days: n => `${n}日連続。`,
+    recall: (m, n, k, blind) => (blind ? '目を閉じて、' : '') + `${m}メートル走って、鈴を${n}回鳴らし、ボイを${k}回聞いた。`,
+    endKeys: 'S で送る。R でもう一度。Space でメニューへ。',
+    matchGo: '3分マッチ。点を多く取ったほうが勝ち。', mt: { solo: '', attack1: '相手1人。', attack2: '相手2人。', defend: '守り！相手が来る。' }, left60: 'あと1分！', full: '試合終了！',
+    cShare: '送る（S）', cAgain: 'もう一度（R）', cMenu: 'メニューへ（Space）', copied: 'コピーしました。', cHint: '画像は長押し（右クリック）で保存できます',
+    dailyMenu: (done, r, n) => (done ? '📅 きょうは済み：' + (r && r.ok ? `ゴール ${r.time}秒` : 'ノーゴール') : '📅 きょうの分は まだ') + (n >= 2 ? ` ・ ${n}日連続` : ''),
+    touchSay: 'スマホでは、左半分で、指を上へすべらせて進む。横へすべらせて向きを変える。右半分をタップで蹴る。長押しで強く。右半分を上へすべらせて、ボイ。',
+    thumbSay: '親指モードです。親指を、画面のどこかに置く。上へずらすと進む。横へずらすと、正面を向いたまま、横に歩く。離すと止まって聞く。トンで蹴る。もう1本の指を長く押すと、強く蹴る。2本の指で同時にトンで、ボイ。',
+    gyroSayOn: '向きを変えるときは、親指を置いたまま、スマホを左右にひねる。カチ1回で30度。',
+    gyroSayNo: 'ジャイロが使えないので、はじいて回ります。親指を横へサッとはじいて離すと、カチ1回で30度。',
+    gyroOnSay: 'ひねって向く、オン。', gyroOffSay: 'ひねって向く、オフ。はじいて回ります。',
+    gyroBtn: on => on ? '🌀 ひねって向く：オン（押すとオフ）' : '🌀 ひねって向く：オフ（押すとオン）',
+    thumbNote: '👍 親指モード（電車でも・画面を見ないで）：画面のどこかに親指を置く＝そこが真ん中／上へずらす＝進む（下＝下がる）／横へずらす＝正面を向いたまま横歩き（斜めもできる）／親指を置いたままスマホをひねる＝向きが変わる（約 20° でカチ＝30°・大きく回るときは ひねって戻すをくり返す）／ひねりが使えないとき・オフのとき＝横へサッとはじいて離す＝カチ 30°／離す＝止まって聞く／トン＝蹴る（ちょん）／もう 1 本の指を長押し＝強く蹴る（その指を上へすべらせる＝ボイ！）／2 本指で同時にトン＝ボイ！／上のはし＝左「今どこ？」・右「ガイド」／3 本指＝止める',
+    touchNote: '📱 スマホ・タブレット：左半分＝指を上へすべらせて進む（下へ＝下がる）・横へすべらせて向きを変える（カチ 1 回＝30°）／右半分＝タップで蹴る・長押しで強く・上へすべらせて「ボイ！」／画面の上のはし＝左「今どこ？」・右「ガイドに聞く」／3 本指＝止める',
+    cardDaily: 'きょうの1本', cardMatch: '3分マッチ', cardGoal: 'ゴール！', cardNo: 'ノーゴール', cardSec: '秒', cardTry: 'あしたも、同じ時間に。',
+    cardWin: '勝ち！', cardLose: '負け', cardDraw: '引き分け',
+    cardStats: (m, n, k) => `走った ${m}m ・ 鈴 ${n}回 ・ 聞いたボイ ${k}回`, cardLv: l => `暗さ レベル${l}` + (l >= 5 ? '（真っ暗）' : ''), cardDays: n => `${n}日連続`,
+    cardFoot: '目を閉じて遊ぶ、音だけのサッカー',
+    paused: '止めています', lvName: l => l >= 5 ? 'レベル5、真っ暗' : `レベル${l}`,
+  },
+  en: {
+    sub: 'Blind football you play by ear',
+    lead: ['Put on earphones and <b>close your eyes</b>.',
+      'Find the ball by the sound of the bells inside it, dribble it, and score.',
+      'Behind the goal, the guide knocks on the posts: "clang, clang". A ball that stops is silent. After 2 seconds the referee gives it a light roll.'],
+    keys: [['W / ↑', 'forward (S / ↓ back)'], ['A D / ← →', 'one tap = 30° (one hour on a clock), hold = keep turning'], ['Z / C', 'sidestep left / right (keep facing forward)'], ['Shift', 'sprint (you breathe hard)'],
+      ['Space', 'tap = small push, hold = strong kick'], ['E', 'ask the guide (goal direction and distance)'], ['Q', 'where am I? (the coach tells your zone, the goal and the board)'],
+      ['nothing', 'stand still and listen'], ['L', 'darkness 1→5 (1 = visible practice with coach / 5 = total dark)'], ['R / Esc', 'restart / pause'],
+      ['V', 'Voy! (shout before going for their ball)'], ['P', 'penalty shoot-out (title screen)'], ['O / J', 'shoot-out with a friend: make a code / join with a code'], ['T / M', 'today\u2019s one (same play worldwide) / 3-minute match. Title screen'], ['K', 'ear training (find the bells, the goal and the board by ear; title screen)'], ['H', 'hear how to play'], ['N', 'voice ⇔ screen reader only']],
+    start: 'Press Space to start',
+    appLabel: 'Voy! Blind football you play by ear. Press H to hear how to play. Press 1 or Space for visible practice, 5 to play with eyes closed. First time? Start with visible practice.',
+    help: 'How to play. First time? Press 1 or Space to start with visible practice. Level 1 is fully visible and a coach talks you through it. As you get used to it, press L to make it darker. Press 5 to play with eyes closed. Put on earphones and close your eyes. Find the ball by the sound of the bells inside it, dribble it, and score. Behind the goal, the guide knocks on the posts. A ball that stops is silent. After 2 seconds the referee gives it a light roll. Keys. W or up arrow, forward. S or down arrow, back. A and D, or left and right arrows, turn. One tap turns exactly 30 degrees, one hour on a clock, with a click. The coach tells directions as clock hours: 2 o’clock is two taps right, 11 o’clock is one tap left, 6 o’clock is behind you. Shift, sprint. Tap Space for a small push. Hold Space for a strong kick. E asks the guide for the goal direction and distance. Q asks the coach where you are. In the dark, the clang, clang ahead and your goalkeeper clapping behind you are your landmarks. Near a board you hear a soft wind from that side. V shouts Voy. Always shout before going for the other team\u2019s ball. Contact without shouting is a foul. Opponents shout Voy as they come at you. Press nothing to stand still and listen. L changes darkness from 1 to 5. N switches voice and screen reader only. On the title screen, K starts ear training, T is today\u2019s one, M is a three-minute match. R restarts. Escape pauses. Voy is Spanish for, I am coming. In blind football, the player going for the ball must always shout it. Nobody can see, so closing in silently is dangerous. Contact without shouting is a foul. Press Space to start.',
+    pausedSay: 'Paused. Press Space to continue. H for how to play.',
+    voiceOn: 'Voice on.', voiceOff: 'Voice off. Screen reader only.',
+    touch: 'touch', swapped: 'L/R swapped',
+    rt: { solo: 'Warm-up. No defenders.', tut: '', attack1: 'One defender waits in front of the goal. When you hear Voy, slip past and score.', attack2: 'Two defenders. Dodge the Voy calls and score.',
+      defend: 'Now you defend. They have the ball and are coming at your goal. Follow the bells, and press V to shout Voy just before you close in. Win it back and score at the other end.' },
+    tname: { pk: 'PK', solo: 'solo', tut: 'tutorial', attack1: '1 defender', attack2: '2 defenders', defend: 'defend' },
+    foul: (k, m, why) => (why === 'expired' ? 'Foul! Your Voy was too long ago. ' : 'Foul! You made contact without shouting Voy. ') + `Under 60 seconds: ${k} of ${m}.`,
+    taken: 'Lost it', got: 'Got it',
+    net: { host: '🌐 Shoot-out with a friend: make a code', join: 'Join', ph: '4-digit code', prep: 'Getting ready…', code: c => `Your code is "${c}". Tell your friend and wait…`,
+      codeSay: c => `Your code is ${c}.`, ok: 'Connected!', okWait: 'Connected! Waiting for the start…', joining: 'Connecting…', need4: 'The code is 4 digits',
+      notFound: 'Could not connect. Check the code', noOne: 'Nobody has that code', noLib: 'Could not load the connection library (check your network)',
+      fail: t => `Could not connect (${t}). It does not work on preview pages or office networks`, lost: 'Connection lost',
+      full: 'There are already two players.', noPause: 'You cannot pause an online shoot-out.', typeCode: 'Type the code, then Enter.' },
+    pk: { btn: '🥅 Penalty shoot-out', youKickLong: 'Your kick. Aim with left or right, 5 degrees per tap. Listen to the keeper calling and the guide knocking on the posts, then hold Space to kick.',
+      youKick: 'Your kick.', youKeepLong: 'You keep goal. Listen to the clicks; right after the thump, left, right or Space to dive.', youKeep: 'You are the keeper.',
+      score: (me, them, n) => `Kick ${n}. ${me} to ${them}.`, R: 'right', L: 'left', C: 'the middle', stay: 'stayed', diveR: 'went right', diveL: 'went left', diveC: 'stayed in the middle',
+      res: { goal: ['Goal!', 'They scored.'], save: ['Saved.', 'Save!'], miss: ['Wide!', 'Wide!'], post: ['Post!', 'Post!'] },
+      kickLine: (kd, gd, res) => `You kicked ${kd}. The keeper ${gd}. ${res}`, keepLine: (kd, gd, res) => `It went ${kd}. You ${gd}. ${res}`,
+      now: (me, them) => `${me} to ${them}.`,
+      over: (me, them) => me > them ? `${me} to ${them}. You win!` : me < them ? `${me} to ${them}. You lose.` : `${me} to ${them}. A draw.`,
+      streak: n => `${n} shoot-out wins in a row!`, again: 'Space to play again.',
+      help: 'Penalty shoot-out. You and the other side take turns, five kicks each. When kicking, aim with left or right, 5 degrees per tap. The keeper calling and the guide knocking on the posts mark the goal. Hold Space to kick. Too soft is easy to save, too hard goes wide. When keeping, you hear the kicker\u2019s aiming clicks. Right after the thump, press left, right or Space to dive.' },
+    pos: { own: 'Your third', mid: 'Middle', att: 'Their third', left: 'left side', center: 'centre', right: 'right side',
+      fmt: (z, l, hg, dg, hb, db) => `${z}, ${l}. Goal at ${hg} o\u2019clock, ${dg} metres. Board at ${hb} o\u2019clock, ${db} metres.` },
+    earTop: 'Put on earphones. Close your eyes.',
+    seeNote: 'First time? Level 1 is fully visible and a coach talks you through it. As you get used to it, press L to make it darker (2 = see-through, 3 = outlines, 4 = ripples only, 5 = total dark).',
+    coach: { R: 'right', L: 'left', there: 'There!', twelve: m => `12 o'clock, straight, ${m} metres`, ball: (h, m) => `Ball, ${h} o'clock, ${m} metres`,
+      opp: (h, m) => `Their ball, ${h} o'clock, ${m} metres`, callVoy: 'Press V, Voy!',
+      haveGoal: h => `Got it. Goal, ${h} o'clock`, haveStraight: `Goal, 12 o'clock, straight`, shootNow: 'Straight, shoot!',
+      fine: sd => `Goal almost at 12. Hold to turn a little ${sd}` },
+    tutClock: (what, h, n, key) => h === 12 ? `${what} is at 12 o'clock, straight ahead.` : `${what} is at ${h} o'clock. Press ${key} ${n} time${n > 1 ? 's' : ''}.`, tutBall: 'The ball', tutGoal: 'The goal',
+    arrowBall: 'Ball', arrowGoal: 'Goal',
+    goSee: 'Visible practice. Watch the screen and listen too. Find the ball, and go for goal.',
+    btnSee: '👀 Visible practice (level 1)', btnBlind: '🙈 Eyes closed (level 5)', btnHint: 'First time? Start with visible practice. Keys: 1 or Space = visible practice, 5 = eyes closed.',
+    darker: 'Next, press L to make it one step darker.',
+    ballLeft: 'Ball is away', hold: '⚽ on your foot',
+    resume: 'Continue',
+    tut: ['', 'Face the ball. A beep means you are facing it.', 'There! Press W to walk.', 'Keep pressing W. The ball comes with you.',
+      'Face the goal. A pop means you are facing it.', 'Hold Space, then let go to kick.'],
+    tutFirst: 'Your first try.', tutAligned: 'You are already facing the goal.', tutBack: 'The ball got away. Face the ball again.',
+    tutRetry: 'Once more. Press Space or R to try the tutorial again.',
+    newRec: 'New record!',
+    tutDone: 'Goal! That is Voy. Now the real thing. The first two are on your own, then defenders who shout Voy join in. Press Space for next.',
+    head: { goal: 'Goal!', timeup: 'Time up.', lost: 'They scored.' },
+    foulHead: why => why === 'expired' ? 'Foul! Your Voy was too long ago.' : 'Foul! You made contact without shouting Voy.',
+    body: (s, n, k) => `${s} seconds, ${n} touches, lost the ball ${k} times.`,
+    stars: n => n ? `${n} star${n > 1 ? 's' : ''}.` : 'No stars.',
+    streak: n => `${n} in a row!`, oppLv: n => `Defender level ${n}.`,
+    tallyTxt: (k, m) => `Under 60 seconds: ${k} of ${m}.`,
+    nextKeys: 'Space for next, R to retry.',
+    missR: 'Wide right!', missL: 'Wide left!', post: 'Post!', left30: '30 seconds left!',
+    lost: (k, m) => `They scored. Under 60 seconds: ${k} of ${m}.`,
+    about: 'About blind football (IBSA)', aboutUrl: 'https://blindfootball.sport/',
+    small: 'Trial version. Numbers from IBSA Blind Football Laws of the Game 2025–2029.', credit: 'Voice: VOICEVOX:冥鳴ひまり (Japanese)',
+    voy: 'Voy = Spanish for "I’m coming!". In blind football, the player going for the ball must always shout it. Nobody can see, so closing in silently is dangerous. Contact without shouting is a foul.',
+    lrIntro: 'No earphones? It is fine as long as you can tell left from right. Left right test. Press the arrow key on the side where the bells ring.',
+    lrMsg: 'Left / right test\nPress ← or → where the bells ring\n(Enter to skip)',
+    lrOK: 'Left and right are fine.', lrFlip: 'Your left and right seem swapped. I swapped them for you.', lrRetry: 'Once more.',
+    go: 'Close your eyes. Find the ball, and go for goal.', next: 'Next one.',
+    goal: (s, n, k, m) => `Goal! ${s} seconds, ${n} touches. Under 60 seconds: ${k} of ${m}.`,
+    timeup: (k, m) => `Time up. Under 60 seconds: ${k} of ${m}.`, out: 'Out.',
+    straight: 'straight', slR: 'a little right', slL: 'a little left', right: 'right', left: 'left', backR: 'behind you, turn right', backL: 'behind you, turn left',
+    askFmt: (d, m) => `${d}, ${m} metres!`, askShoot: m => `Straight, ${m} metres. Shoot!`,
+    calIntro: 'Direction test. Turn toward the bells and press Space.',
+    calMsg: (i, n) => `Direction test ${i}/${n}\nturn to the bells, press Space`,
+    calDone: (a, k, n) => `Done. Average error ${a} degrees. Within 15 degrees: ${k} of ${n}.`,
+    lrDone: (k, n) => `Left right test: ${k} of ${n} correct.`,
+    earBtn: '👂 Ear training (1 min)', earTitle: 'Ear training', earIntro: 'Ear training. Three drills.',
+    ear: ['One. Turn toward the bells and press Space.', 'Two. Turn toward the goal, where you hear clang, clang, and press Space.',
+      'Three. A board is straight ahead. Tap W to move a little at a time. When you hear the wind, the board is right there. Stop before you hit it and press Space.'],
+    earDeg: n => `${n} degrees.`, earCm: n => `${n} centimetres to the board.`, earHit: 'You hit it.',
+    earDone: r => `Done. Bells: ${r.bell} degrees on average. Goal: ${r.goal} degrees.` + (r.wall != null ? ` Board: ${r.wall} centimetres.` : '') + (r.hits ? ` Hit the board ${r.hits} times.` : ''),
+    earBetter: 'Better than last time.', earAgain: 'Space to go again. Escape to quit.',
+    earMsg: (d, i, n) => ['turn to the bells, press Space', 'turn to the clang-clang goal, press Space', 'tap W, stop just before the board, press Space'][d] + `\nEar training ${d + 1}/3 · ${i}/${n}`,
+    earSum: r => `bells ±${r.bell}° · goal ±${r.goal}°` + (r.wall != null ? ` · board ${r.wall} cm` : '') + (r.hits ? ` · hit ${r.hits}` : ''),
+    earLast: 'Last ear training: ', earKeys: 'Space = again · Esc = quit',
+    dailyBtn: '📅 Today\u2019s one', m3Btn: '⚽ 3-minute match',
+    dailyGo: 'Today\u2019s one. The whole world gets the same play. One opponent. Dodge the Voy and score.', dailyDone: 'Today already counted.',
+    days: n => `${n} days in a row.`,
+    recall: (m, n, k, blind) => (blind ? 'Eyes closed, you ' : 'You ') + `ran ${m} metres, rang the bells ${n} times, and heard Voy ${k} times.`,
+    endKeys: 'S to share. R to go again. Space for the menu.',
+    matchGo: 'Three-minute match. Most goals wins.', mt: { solo: '', attack1: 'One opponent.', attack2: 'Two opponents.', defend: 'Defend! They are coming.' }, left60: 'One minute left!', full: 'Full time!',
+    cShare: 'Share (S)', cAgain: 'Again (R)', cMenu: 'Menu (Space)', copied: 'Copied.', cHint: 'Long-press (right-click) the image to save it',
+    dailyMenu: (done, r, n) => (done ? '📅 Done today: ' + (r && r.ok ? `goal in ${r.time}s` : 'no goal') : '📅 Today\u2019s one is waiting') + (n >= 2 ? ` · ${n} days in a row` : ''),
+    touchSay: 'On a phone: on the left half, slide up to move, slide sideways to turn. Tap the right half to kick, hold for a strong kick. Slide up on the right half to shout Voy.',
+    thumbSay: 'Thumb mode. Put your thumb anywhere on the screen. Slide up to move. Slide sideways to sidestep while facing forward. Let go to stop and listen. Tap to kick. Hold a second finger for a strong kick. Tap with two fingers together to shout Voy.',
+    gyroSayOn: 'To turn, keep your thumb down and twist the phone left or right. 30 degrees per click.',
+    gyroSayNo: 'The gyro is not available, so flick to turn. Flick your thumb sideways and let go: 30 degrees per click.',
+    gyroOnSay: 'Twist to turn, on.', gyroOffSay: 'Twist to turn, off. Flick to turn.',
+    gyroBtn: on => on ? '🌀 Twist to turn: on (tap to switch off)' : '🌀 Twist to turn: off (tap to switch on)',
+    thumbNote: '👍 Thumb mode (on a train, eyes off the screen): put your thumb anywhere = that is the centre / slide up = move (down = back) / slide sideways = sidestep while facing forward (diagonals work too) / keep your thumb down and twist the phone = turn (about 20° of twist = one 30° click; twist and return to turn further) / if twisting is unavailable or off = flick sideways and let go = 30° / let go = stop and listen / tap = small kick / hold a second finger = strong kick (slide it up = “Voy!”) / two-finger tap = “Voy!” / top edge = left “where am I?”, right “guide” / three fingers = pause',
+    touchNote: '📱 Phone / tablet: left half = slide up to move (down = back), slide sideways to turn (one click = 30°) / right half = tap to kick, hold for power, slide up to shout “Voy!” / top edge = left “where am I?”, right “ask the guide” / three fingers = pause',
+    cardDaily: 'Today\u2019s one', cardMatch: '3-minute match', cardGoal: 'GOAL!', cardNo: 'No goal', cardSec: 's', cardTry: 'Same time tomorrow.',
+    cardWin: 'Win!', cardLose: 'Lost', cardDraw: 'Draw',
+    cardStats: (m, n, k) => `ran ${m} m · bells ${n} · Voy heard ${k}`, cardLv: l => `darkness level ${l}` + (l >= 5 ? ' (total dark)' : ''), cardDays: n => `${n} days in a row`,
+    cardFoot: 'Football you play with your eyes closed',
+    paused: 'Paused', lvName: l => l >= 5 ? 'level 5, total dark' : `level ${l}`,
+  }
+}[LANG];
+document.documentElement.lang = LANG;
+document.title = LANG === 'ja' ? 'ボイ！' : 'Voy!';
+document.body.setAttribute('aria-label', T.appLabel);
+
+/* ====================== 本物の数字（方針.md §1・§6） ====================== */
+const PL = 40, PW = 20;                 // ピッチ 40 × 20 m
+const GY = PW / 2, GHW = 3.66 / 2;      // ゴール 内のり 3.66 m
+const POST_R = 0.04;                    // ポスト 8 cm
+const BR = 0.1, PR = 0.35;              // ボール半径・選手半径
+const DT = 1 / 60;
+const TURN = 120 * Math.PI / 180;       // 毎秒 120°
+const VRUN = 5, VDASH = 7, VBACK = 2;   // m/s
+const VSIDE = 3, VSIDE_BALL = 2.5;      // 横歩き（正面を向いたまま）は前の 6 割・ボールを持っていると 5 割
+const FRIC = 0.8, DRAG = 0.3;           // 転がりの減速 0.8 m/s² ＋ 速さに比例
+const REST_BOARD = 0.5;                 // 板の反発
+const ATT_X = PL - 12;                  // 攻めの 1/3（ゴールラインから 12 m）
+
+/* ====================== 種つき乱数 ====================== */
+function rng32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+/* ====================== 世界（音から切りはなした物理） ====================== */
+// ステップ2：相手（「ボイ！」と叫んで寄せてくる）。?opp=0 で相手なし（ステップ1 と同じ）、?type=attack1|attack2|defend で場面を固定
+const OPP_ON = Q.get('opp') !== '0';
+const TYPE_FIX = ['attack1', 'attack2', 'defend'].includes(Q.get('type')) ? Q.get('type') : null;
+const MATCH_T = clamp(+Q.get('mt') || 180, 10, 600);   // 3分マッチの長さ（秒）
+const IS_TOUCH = Q.has('touch') || !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+const THUMB = !Q.has('nothumb');   // 試しのページでは最初から親指モード   // 親指モード（試し・2026-11-16）：置いた所が真ん中の親指スティック＋もう 1 本の指で蹴る
+const TYPES = ['attack1', 'defend', 'attack2'];   // 1本目＝相手1人を抜く、2本目＝守る、3本目＝相手2人
+const OTURN = Math.PI;                   // 相手は毎秒 180° 回る
+const OPRESS = 4.2, OGUARD = 2.4, OCARRY = 3.2;   // m/s（寄せる・待つ・運ぶ）
+const VOY_OK = 2.5;                      // 「ボイ！」と叫んでから 2.5 秒は寄せてよい（IBSA Law 12：寄せる前にはっきり言う）
+// 場面の順：はじめの 2 本は相手なし（ウォームアップ）→ 相手1人 → 守り → 相手2人 をくり返す
+const typeFor = i => !OPP_ON ? 'solo' : TYPE_FIX || (i < 2 ? 'solo' : TYPES[(i - 2) % 3]);
+// 相手の強さ（1〜8）：ゴールするたび +1、失敗で −1。寄せる速さ +0.1 m/s・タックル +3% ずつ
+const oppPress = w => OPRESS + 0.1 * (w.oppLv - 1);
+const oppSteal = w => 0.4 + 0.03 * (w.oppLv - 1);
+// 守りの場面の相手（ボールを運んでくる人）は強さで速くしない：運ぶ 2.8 m/s・追う 3.4 m/s まで・タックル 40% のまま
+// （強さで上げると、全部見えている bot でも守りが 46〜64% に落ちた。この値で 73%）
+let ATT_CARRY = 2.8, ATT_PRESS_MAX = 3.4, ATT_STEAL_MAX = 0.4;
+
+// opts.tut＝はじめてのお手本から、opts.auto＝終わったら自動で次（bot・simRounds）
+function newWorld(seed, opts) {
+  opts = opts || {};
+  const w = { seed, rng: rng32(seed), t: 0, ev: [], pend: [], results: [], stepSide: 0, O: [],
+    auto: !!opts.auto, mode: opts.mode || 'free', score: [0, 0], matchT: 0, matchOver: false, heard: 0, tot: { dist: 0, touches: 0 }, path: [], tutPending: !!opts.tut, assist: false, lastKickT: -9, streak: 0, bestStreak: 0, oppLv: 1,
+    P: { x: 10, y: 10, a: 0, spd: 0, sspd: 0, stepPh: 0, exert: 0, wallT: -9, voyT: -9, bodyT: -9, stillT: 0 },
+    B: { x: 20, y: 10, vx: 0, vy: 0, jPh: 0, idle: 0, rollT: 0, owner: null },
+    kickCD: 0, askT: -9, guideT: 0.6, roundNo: 0, typeIdx: -1, roundSeed: 0, lastOwner: null, ownerT: 0, oppHoldT: -99, oppLostT: -99 };
+  newRound(w); return w;
+}
+function newOpp(i, x, y, a, role) {
+  return { i, x, y, a, spd: 0, role, voyT: -9, cd: 0, kickCD: 0, tackT: 0, stepPh: 0, retT: 0, tx: x, ty: y, vt: 0, carryT: 0 };
+}
+function newRound(w, same) {
+  if (!same) {
+    if (w.tutPending) { w.tutPending = false; w.curType = 'tut'; }
+    else { w.typeIdx++; w.curType = w.mode === 'daily' ? 'attack1' : w.mode === 'match' ? TYPES[w.typeIdx % 3] : typeFor(w.typeIdx); }
+    w.roundSeed = (w.rng() * 4294967296) >>> 0;
+  }
+  const r = rng32(w.roundSeed), P = w.P, B = w.B;
+  w.type = w.curType;
+  w.O = []; B.owner = null; B.idle = 0; B.jPh = 0; w.tutStage = 0;
+  if (w.type === 'tut') {   // お手本：相手なし・ボールは 3 m 前（右 60° の向き）・その先にゴール
+    P.x = 27; P.y = 10; P.a = -Math.PI / 3; B.x = 30; B.y = 10; B.vx = B.vy = 0; w.tutStage = 1; w.tutSayT = w.t; w.tutT0 = 0; w.tutLostT = 0;
+  } else if (w.type === 'defend') {
+    P.x = 6 + r() * 8; P.y = 4 + r() * 12; P.a = (r() * 2 - 1) * Math.PI;
+    const o = newOpp(0, 28 + r() * 5, 4 + r() * 12, Math.PI, 'att'); w.O.push(o);
+    B.x = o.x - 0.55; B.y = o.y; B.vx = B.vy = 0; B.owner = 0;
+  } else {
+    P.x = 6 + r() * 10; P.y = 3 + r() * 14; P.a = (r() * 2 - 1) * Math.PI;
+    for (let k = 0; k < 20; k++) {
+      const ang = r() * Math.PI * 2, d = 4 + r() * 5;
+      B.x = clamp(P.x + Math.cos(ang) * d, 2, 36); B.y = clamp(P.y + Math.sin(ang) * d, 1.5, PW - 1.5);
+      if (Math.hypot(B.x - P.x, B.y - P.y) > 3.5) break;
+    }
+    const va = r() * Math.PI * 2; B.vx = Math.cos(va) * 2; B.vy = Math.sin(va) * 2;
+    if (w.type === 'attack1' || w.type === 'attack2') {
+      const o = newOpp(0, 24 + r() * 7, 4 + r() * 12, Math.PI, 'def');
+      if (Math.hypot(o.x - B.x, o.y - B.y) < 5) o.x = clamp(B.x + 6, 22, 36);
+      w.O.push(o);
+      if (w.type === 'attack2') w.O.push(newOpp(1, 31 + r() * 5, 5 + r() * 10, Math.PI, 'def'));
+    }
+  }
+  P.spd = 0; P.sspd = 0; P.exert = 0; P.voyT = -9; P.voyEff = -9; P.voyOn = false; w.path = [];
+  w.roundT = 0; w.touches = 0; w.dist = 0; w.stolen = 0; w.state = 'play'; w.kickCD = 0; w.firstTouch = null; w.roundNo++;
+  w.lastOwner = B.owner; w.ownerT = w.t - 9; w.oppHoldT = w.t - 9; w.oppLostT = -99; w.recoverT = null; w.said30 = false; P.stillT = 0;
+  w.ev.push({ k: 'start', n: w.roundNo, type: w.type });
+}
+// 向き：←／→ を 1 回ちょんと押す＝ちょうど 30°（時計の 1 時間ぶん）。毎秒 360° で回って、回り終わりに「カチ」。
+// 押しっぱなしは今までどおり毎秒 120° で回り続ける（キーの側で 0.25 秒から）
+const SNAP = 30 * Math.PI / 180, SNAP_RATE = 2 * Math.PI;
+function turnPlayer(P, inp) {
+  if (inp.snap) P.snapLeft = (P.snapLeft || 0) + inp.snap * SNAP;
+  if (P.snapLeft) {
+    const st = Math.sign(P.snapLeft) * Math.min(Math.abs(P.snapLeft), SNAP_RATE * DT);
+    P.a = wrap(P.a + st); P.snapLeft -= st;
+    if (Math.abs(P.snapLeft) < 1e-9) { P.snapLeft = 0; return 'done'; }
+    return 'snap';
+  }
+  P.a = wrap(P.a + clamp(inp.turn, -1, 1) * TURN * DT); return null;
+}
+function relBall(w) {
+  const P = w.P, B = w.B, dx = B.x - P.x, dy = B.y - P.y;
+  return { d: Math.hypot(dx, dy), ang: angDiff(Math.atan2(dy, dx), P.a) };
+}
+function stepFreq(spd) { return 1.4 + Math.abs(spd) * 0.3; }   // 1秒の歩数（半歩ごとに足音）
+function possessBy(b, B) {   // 体 b（自分か相手）の足元 0.9 m・左右 65° 以内にボール
+  const dx = B.x - b.x, dy = B.y - b.y;
+  return Math.hypot(dx, dy) < 0.9 && Math.abs(angDiff(Math.atan2(dy, dx), b.a)) < 1.13 && Math.hypot(B.vx, B.vy) < 8;
+}
+function possess(w) { return possessBy(w.P, w.B); }
+const oppOwner = w => typeof w.B.owner === 'number' ? w.O[w.B.owner] || null : null;
+function markTouch(w) {
+  w.touches++; if (w.firstTouch == null) w.firstTouch = w.roundT;
+}
+
+// ドリブル固定：半歩ごとに、次の半歩のときボールが足先 0.55 m に来るよう転がす（自分も相手も同じ）
+function touchBall(b, B) {
+  // 横歩き（sspd・右が＋）のときも、次の半歩で体が行く所の足先へ転がす＝正面を向いたまま ボールを横へ運べる
+  const sv = b.sspd || 0, T = 1 / stepFreq(Math.hypot(b.spd, sv)), c = Math.cos(b.a), s = Math.sin(b.a), ahead = b.spd * T + 0.55;
+  // 板ぎわでは足の裏で板から引きはがす（板から 0.45 m 内側をねらう）
+  const tx = b.x + c * ahead - s * sv * T, ty = clamp(b.y + s * ahead + c * sv * T, 0.45, PW - 0.45);
+  let vx = (tx - B.x) / T, vy = (ty - B.y) / T; const v = Math.hypot(vx, vy);
+  if (v > 0) { const k = (v + (FRIC + DRAG * v) * T * 0.5) / v; vx *= k; vy *= k; }
+  B.vx = vx; B.vy = vy;
+}
+function dribbleTouch(w) {
+  const B = w.B; touchBall(w.P, B); B.owner = 'P'; markTouch(w);
+  w.ev.push({ k: 'touch', x: B.x, y: B.y });
+}
+// 相手のボールに触る：叫んでいれば取れる、黙っていればファウル
+const SCRAMBLE = 0.7;   // 相手が最初に取ってから 0.7 秒までは競り合い（ファウルにしない）
+// 叫びが有効か：叫んでから 2.5 秒、または叫んだあとボールに近づき続けている間（止まる・離れると 2.5 秒で切れる）
+const voyOK = w => w.t - w.P.voyEff <= VOY_OK;
+const isOppId = x => typeof x === 'number';
+// 持ち主が変わった時刻。競り合いの 0.7 秒は「相手が最初に取った時刻」から数える（相手→なし→相手 の往復で始まり直さない）
+function trackOwner(w) {
+  const o = w.B.owner, prev = w.lastOwner;
+  if (o === prev) return;
+  if (isOppId(o) && !isOppId(prev) && w.t - w.oppLostT > 1.5) w.oppHoldT = w.t;
+  if (!isOppId(o) && isOppId(prev)) w.oppLostT = w.t;
+  if (o === 'P' && w.type === 'defend' && w.recoverT == null) w.recoverT = w.roundT;
+  w.lastOwner = o; w.ownerT = w.t;
+}
+function pTake(w) {
+  const o = oppOwner(w); if (!o) return true;
+  if (w.t - w.oppHoldT <= SCRAMBLE) { o.cd = 0.5; o.carryT = 0; w.P.voyOn = false; w.ev.push({ k: 'steal', by: 'P', scramble: true, x: w.B.x, y: w.B.y }); return true; }
+  if (voyOK(w)) { o.cd = 1.0; o.carryT = 0; w.P.voyOn = false; w.ev.push({ k: 'steal', by: 'P', x: w.B.x, y: w.B.y }); return true; }
+  foul(w); return false;
+}
+function endRound(w, res, wait) {
+  if (w.state !== 'play') return;
+  w.state = res.state; w.endT = w.t + wait; w.endAt = w.t;
+  const r = Object.assign({ type: w.type, time: w.roundT, touches: w.touches, first: w.firstTouch, stolen: w.stolen, dist: w.dist, recoverT: w.recoverT }, res);
+  // 星：60 秒以内★／30 秒以内（守りは 15 秒以内に取り返す）★／取られずに（守りは 7 秒以内に取り返す）★
+  let st = 0;
+  if (r.ok && r.time <= 60) {
+    st = 1;
+    if (r.type === 'defend') st += (r.recoverT != null && r.recoverT <= 15) + (r.recoverT != null && r.recoverT <= 7);
+    else st += (r.time <= 30) + (r.stolen === 0);
+  }
+  r.stars = st;
+  if (w.mode === 'match') { if (res.state === 'goal') w.score[0]++; else if (res.lost) w.score[1]++; }
+  w.tot.dist += w.dist; w.tot.touches += w.touches;
+  if (r.type !== 'tut' && !res.full) { w.streak = r.ok ? w.streak + 1 : 0; w.bestStreak = Math.max(w.bestStreak, w.streak); }
+  if (r.type !== 'tut' && r.type !== 'solo' && !res.full) w.oppLv = clamp(w.oppLv + (r.ok ? 1 : -1), 1, 8);   // 相手がいる場面だけ
+  r.streak = w.streak; r.oppLv = w.oppLv;
+  w.results.push(r);
+}
+function foul(w) {
+  if (w.state !== 'play') return;
+  const why = w.P.voyT > 0 && w.t - w.P.voyT < 12 ? 'expired' : 'silent';   // 叫ばなかった／叫んでから時間がたった
+  endRound(w, { ok: false, foul: true, why, state: 'foul' }, 4.5); w.ev.push({ k: 'foul', why, x: w.P.x, y: w.P.y });
+}
+
+function step(w, inp) {
+  w.t += DT;
+  for (let i = w.pend.length - 1; i >= 0; i--) if (w.pend[i].t <= w.t) { w.ev.push(w.pend[i].e); w.pend.splice(i, 1); }
+  const P = w.P, B = w.B;
+  if (w.state !== 'play') { ballPhys(w); if ((w.mode === 'match' ? !w.matchOver : w.auto) && w.t >= w.endT) newRound(w); return; }
+  w.roundT += DT;
+  if (w.mode === 'match') {   // 3分マッチ：時計は遊んでいる間だけ進む
+    w.matchT += DT;
+    if (!w.said60 && MATCH_T > 90 && w.matchT >= MATCH_T - 60) { w.said60 = true; w.ev.push({ k: 'left60' }); }
+    if (!w.saidM30 && MATCH_T > 45 && w.matchT >= MATCH_T - 30) { w.saidM30 = true; w.ev.push({ k: 'left30' }); }
+    if (w.matchT >= MATCH_T) { w.matchOver = true; endRound(w, { ok: false, full: true, state: 'full' }, 0); w.ev.push({ k: 'full' }); return; }
+  }
+  if ((w.pathN = (w.pathN || 0) + 1) % 12 === 0 && w.path.length < 600) w.path.push([P.x, P.y]);
+  if (w.mode !== 'match' && !w.said30 && w.roundT >= 60) { w.said30 = true; w.ev.push({ k: 'left30' }); }
+
+  // ---- 自分 ----
+  if (turnPlayer(P, inp) === 'done') w.ev.push({ k: 'snap' });
+  const tgt = inp.fwd > 0 ? inp.fwd * (inp.dash ? VDASH : VRUN) : inp.fwd < 0 ? inp.fwd * VBACK : 0;
+  const acc = Math.abs(tgt) > Math.abs(P.spd) ? 8 : 12;
+  P.spd += clamp(tgt - P.spd, -acc * DT, acc * DT);
+  // 横歩き：正面を向いたまま 右（＋）・左（−）へ。前の 6 割の速さ・ボールを持っていると少し遅い
+  const stg = clamp(inp.strafe || 0, -1, 1) * (B.owner === 'P' && possess(w) ? VSIDE_BALL : VSIDE);
+  P.sspd += clamp(stg - P.sspd, -(Math.abs(stg) > Math.abs(P.sspd) ? 8 : 12) * DT, (Math.abs(stg) > Math.abs(P.sspd) ? 8 : 12) * DT);
+  const c = Math.cos(P.a), s = Math.sin(P.a);
+  const pvx = c * P.spd - s * P.sspd, pvy = s * P.spd + c * P.sspd;   // 体の速さ（世界の向き）
+  const nx = P.x + pvx * DT, ny = P.y + pvy * DT;
+  const cx = clamp(nx, PR, PL - PR), cy = clamp(ny, PR, PW - PR);
+  if (cx !== nx || cy !== ny) {
+    if (Math.hypot(P.spd, P.sspd) > 1 && w.t - P.wallT > 0.6) {
+      P.wallT = w.t;
+      if (cy !== ny) w.ev.push({ k: 'wallP', x: cx, y: ny < PR ? 0 : PW });
+      else w.ev.push({ k: 'wallP', x: nx < PR ? 0 : PL, y: cy, end: true });
+    }
+    P.spd *= 0.5; P.sspd *= 0.5;
+  }
+  w.dist += Math.hypot(cx - P.x, cy - P.y); P.x = cx; P.y = cy;
+  P.stillT = Math.hypot(P.spd, P.sspd) < 0.2 ? P.stillT + DT : 0;     // 止まって聞くと鈴がはっきりする
+  if (inp.dash && P.spd > 5.5) P.exert = Math.min(1, P.exert + DT * 0.22); else P.exert = Math.max(0, P.exert - DT * 0.1);
+
+  // ---- ボイ！（自分） ----
+  if (inp.voy && w.t - P.voyT > 0.5) {
+    P.voyT = w.t; P.voyEff = w.t; P.voyOn = true; w.ev.push({ k: 'pvoy', x: P.x, y: P.y });
+    for (const o of w.O) if (Math.hypot(o.x - P.x, o.y - P.y) < 7 && w.t - (o.hesLast || -9) >= 3) { o.hesT = 0.3; o.hesLast = w.t; }   // 声で一瞬止まる（3 秒に 1 回まで）
+  }
+  if (P.voyOn) {
+    const dx = B.x - P.x, dy = B.y - P.y, d = Math.hypot(dx, dy) || 1, closing = (pvx * dx + pvy * dy) / d;
+    if (closing > 0.3) P.voyEff = w.t;
+    else if (w.t - P.voyEff > VOY_OK) { P.voyOn = false; w.ev.push({ k: 'voyEnd' }); }
+  }
+
+  // ---- 足音・ドリブル ----
+  w.kickCD = Math.max(0, w.kickCD - DT);
+  const as = Math.hypot(P.spd, P.sspd), poss = possess(w), going = (P.spd > 0.3 || Math.abs(P.sspd) > 0.3) && P.spd > -0.3;   // 前か横へ動いている
+  if (as > 0.4) {
+    P.stepPh += DT * stepFreq(as);
+    if (P.stepPh >= 1) {
+      P.stepPh -= 1; w.stepSide ^= 1;
+      w.ev.push({ k: 'step', v: as, side: w.stepSide, ex: P.exert, lat: P.sspd / as });   // lat＝横へ動いている割合（足音を その向きから）
+      if (poss && going && w.kickCD <= 0 && pTake(w)) dribbleTouch(w);
+    }
+  } else P.stepPh = 0.65;
+  // 最初のひと触りは半歩を待たない（全速だと半歩で 1.7 m 進み、ボールの横を通り過ぎてしまうため）
+  if (poss && B.owner !== 'P' && going && w.kickCD <= 0 && w.state === 'play' && pTake(w)) dribbleTouch(w);
+  if (w.state !== 'play') return;
+  // 立ち止まって足元にあるときは、足の裏で転がして鳴らす（本物の選手もそうする）
+  if (poss && as < 0.4 && !oppOwner(w)) { B.rollT += DT; if (B.rollT > 0.5) { B.rollT = 0; B.owner = 'P'; w.ev.push({ k: 'roll', x: B.x, y: B.y }); } } else B.rollT = 0.45;
+
+  // ---- 蹴る ----
+  if (inp.kick != null) {
+    const rb = relBall(w);
+    if (rb.d < 1.0 && Math.abs(rb.ang) < 1.22) {
+      if (pTake(w)) {
+        const dur = inp.kick, chon = dur < 0.15, fs = Math.max(0, P.spd);
+        const sp = chon ? Math.min(6, 4 + 0.3 * fs) : 6 + (Math.min(dur, 0.8) - 0.15) / 0.65 * 14;
+        const dir = P.a + (w.rng() * 2 - 1) * 3 * Math.PI / 180;   // ±3° のブレ
+        B.vx = Math.cos(dir) * sp; B.vy = Math.sin(dir) * sp; B.owner = 'P';
+        w.kickCD = chon ? 0.45 : 0.6; markTouch(w); w.lastKickT = w.t;
+        w.ev.push({ k: 'kick', x: B.x, y: B.y, p: (sp - 4) / 16, chon });
+      }
+    } else w.ev.push({ k: 'whiff' });
+  }
+  if (w.state !== 'play') return;
+  // ---- ガイドに聞く（3秒に1回） ----
+  if (inp.ask) {
+    if (w.t - w.askT >= 3) {
+      w.askT = w.t; const dx = PL - P.x, dy = GY - P.y;
+      w.ev.push({ k: 'ask', ang: angDiff(Math.atan2(dy, dx), P.a), d: Math.hypot(dx, dy) });
+    } else w.ev.push({ k: 'askNo' });
+  }
+  // ---- ガイドがポストを叩く（左・右の順に「カン、カン」。攻めの 1/3 では速く） ----
+  w.guideT -= DT;
+  if (w.guideT <= 0) {
+    w.guideT = P.x > ATT_X ? 1.5 : 2.4;
+    w.ev.push({ k: 'post', side: 0, x: PL, y: GY - GHW });
+    w.pend.push({ t: w.t + 0.3, e: { k: 'post', side: 1, x: PL, y: GY + GHW } });
+  }
+  // ---- 相手 ----
+  trackOwner(w);
+  for (const o of w.O) oStep(w, o);
+  trackOwner(w);
+  ballPhys(w);
+  bodies(w);
+  ownerDecay(w);
+  trackOwner(w);
+  tutTick(w);
+  if (w.state === 'play' && w.roundT > 90) { endRound(w, { ok: false, state: 'timeup', time: 90 }, 4); w.ev.push({ k: 'timeup' }); }
+}
+
+// 相手の動き：持っていれば運ぶ（攻め＝こちらのゴールへ／守り＝板のほうへ運んで蹴り出す）、
+// 持っていなければ一番近い1人が「ボイ！」と叫んで寄せ、ほかはボールとゴールの間で待つ
+function oStep(w, o) {
+  const B = w.B, P = w.P;
+  o.cd = Math.max(0, o.cd - DT); o.kickCD = Math.max(0, o.kickCD - DT); o.tackT = Math.max(0, o.tackT - DT); o.hesT = Math.max(0, (o.hesT || 0) - DT);
+  const dB = Math.hypot(B.x - o.x, B.y - o.y);
+  const mine = B.owner === o.i, free = B.owner === null || mine;
+  const has = free && o.cd <= 0 && possessBy(o, B);
+  let tx = o.x, ty = o.y, vt = 0;
+  if (has) {
+    if (o.role === 'att') {
+      const aG = angDiff(Math.atan2(GY - o.y, -o.x), o.a);
+      if (o.x < 9 && Math.abs(o.y - GY) < 6 && Math.abs(aG) < 0.35 && o.kickCD <= 0) {
+        const dir = Math.atan2(GY + (w.rng() - 0.5) * 2 - B.y, -B.x) + (w.rng() * 2 - 1) * 4 * Math.PI / 180;
+        B.vx = Math.cos(dir) * 11; B.vy = Math.sin(dir) * 11; B.owner = o.i; o.kickCD = 0.6; o.cd = 0.8;
+        w.ev.push({ k: 'okick', i: o.i, x: B.x, y: B.y });
+      }
+      tx = 0; ty = GY + Math.sin(w.t * 0.9 + o.i) * 2.5; vt = ATT_CARRY;
+    } else {
+      if (!o.carryT) o.carryT = w.t;
+      const by = B.y < GY ? 0.6 : PW - 0.6; tx = o.x - 3; ty = by; vt = OCARRY;
+      if (w.t - o.carryT > 1.2 && o.kickCD <= 0) {   // 板ぎわを相手陣のほうへ蹴り出す
+        const dir = Math.atan2((by - B.y) * 0.3, -10);
+        B.vx = Math.cos(dir) * 10; B.vy = Math.sin(dir) * 10; B.owner = o.i; o.kickCD = 0.6; o.cd = 2.5; o.carryT = 0;
+        w.ev.push({ k: 'okick', i: o.i, x: B.x, y: B.y });
+      }
+    }
+  } else {
+    o.carryT = 0;
+    if (o.cd <= 0 && isPresser(w, o)) {
+      tx = B.x + B.vx * 0.3; ty = B.y + B.vy * 0.3; vt = o.role === 'att' ? Math.min(ATT_PRESS_MAX, oppPress(w)) : oppPress(w);
+      // 寄せる前に必ず叫ぶ（6 m 以内で 1.2 秒ごと）
+      if (B.owner !== o.i && dB < 6 && w.t - o.voyT > 1.2) { o.voyT = w.t; w.heard++; w.ev.push({ k: 'voy', i: o.i, x: o.x, y: o.y }); }
+    } else if (o.role === 'def') {
+      const gx = PL, dx = gx - B.x, dy = GY - B.y, d = Math.hypot(dx, dy) || 1, k = o.i === 0 ? 0.4 : 0.65;
+      tx = clamp(B.x + dx / d * Math.min(o.i === 0 ? 5 : 9, d * k), 1, PL - 1); ty = clamp(B.y + dy / d * Math.min(5, d * k), 1, PW - 1);
+      vt = Math.hypot(tx - o.x, ty - o.y) > 0.5 ? OGUARD : 0;
+    }
+  }
+  // 向きの決め直しは 0.2 秒ごと（だから急に曲がると振り切れる）
+  if (w.t >= o.retT || has) { o.retT = w.t + 0.2; o.tx = tx; o.ty = ty; o.vt = vt; }
+  const want = Math.atan2(o.ty - o.y, o.tx - o.x), da = angDiff(want, o.a);
+  o.a = wrap(o.a + clamp(da, -OTURN * DT, OTURN * DT));
+  let tv = Math.hypot(o.tx - o.x, o.ty - o.y) < 0.3 ? 0 : o.vt; if (Math.abs(da) > 1.2) tv *= 0.4; if (o.hesT > 0) tv = 0;
+  o.spd += clamp(tv - o.spd, -8 * DT, 6 * DT);
+  o.x = clamp(o.x + Math.cos(o.a) * o.spd * DT, PR, PL - PR); o.y = clamp(o.y + Math.sin(o.a) * o.spd * DT, PR, PW - PR);
+  if (o.spd > 0.4) {
+    o.stepPh += DT * stepFreq(o.spd);
+    if (o.stepPh >= 1) {
+      o.stepPh -= 1; w.ev.push({ k: 'ostep', i: o.i, v: o.spd });
+      if (has && o.kickCD <= 0) { touchBall(o, B); B.owner = o.i; w.ev.push({ k: 'otouch', i: o.i, x: B.x, y: B.y }); }
+    }
+  } else o.stepPh = 0.6;
+  // 自分のボールに寄せてきた相手のタックル（叫んでから 2.5 秒以内だけ）
+  if (B.owner === 'P' && o.cd <= 0 && o.tackT <= 0 && o.hesT <= 0 && dB < 0.62 && w.t - o.voyT <= VOY_OK) {
+    o.tackT = 0.6; const r = w.rng(), ps = o.role === 'att' ? Math.min(ATT_STEAL_MAX, oppSteal(w)) : oppSteal(w);
+    if (r < ps) { B.owner = o.i; touchBall(o, B); w.stolen++; w.kickCD = 0.5; w.ev.push({ k: 'tackle', res: 'steal', i: o.i, x: B.x, y: B.y }); }
+    else if (r < ps + 0.3) { const a = w.rng() * Math.PI * 2; B.vx = Math.cos(a) * 3; B.vy = Math.sin(a) * 3; B.owner = null; w.ev.push({ k: 'tackle', res: 'poke', i: o.i, x: B.x, y: B.y }); }
+    else w.ev.push({ k: 'tackle', res: 'miss', i: o.i, x: B.x, y: B.y });
+  }
+}
+// お手本：次の操作ができるまで先に進まず、5 秒ごとに同じ指示をくり返す
+// ①ボールの方を向く（±10°）→ ②W で触れる → ③そのまま 3 タッチ → ④ゴールの方を向く（±8°）→ ⑤長押しで蹴る → ゴール
+const D2R = Math.PI / 180;
+function tutTick(w) {
+  if (w.type !== 'tut' || w.state !== 'play') return;
+  const P = w.P, B = w.B, rb = relBall(w), angG = angDiff(Math.atan2(GY - P.y, PL - P.x), P.a), s = w.tutStage;
+  let ns = s, back = false;
+  if (s === 1 && Math.abs(rb.ang) < 15 * D2R && !P.snapLeft) ns = 2;   // 12 時（±15°）
+  else if (s === 2 && w.touches >= 1) ns = 3;
+  else if (s === 3 && w.touches - w.tutT0 >= 3) ns = Math.abs(angG) < 8 * D2R ? 5 : 4;   // もうゴールの方なら ④ は とばす
+  else if (s === 4 && Math.abs(angG) < 8 * D2R) ns = 5;
+  // ③〜⑤でボールが離れたら（蹴ったあと 2.5 秒は待つ）①に戻る
+  if (s >= 3 && rb.d > 2 && w.t - w.lastKickT > 2.5) { w.tutLostT += DT; if (w.tutLostT > 1.5) { ns = 1; back = true; } } else w.tutLostT = 0;
+  if (ns !== s) { w.tutStage = ns; w.tutT0 = w.touches; w.tutSayT = w.t; w.tutLostT = 0; w.ev.push({ k: 'tut', n: ns, back, aligned: s === 3 && ns === 5 }); }
+  else if (w.t - w.tutSayT > 5) { w.tutSayT = w.t; w.ev.push({ k: 'tut', n: s }); }
+}
+function isPresser(w, o) {
+  if (o.role === 'att') return true;
+  const B = w.B, dB = Math.hypot(B.x - o.x, B.y - o.y);
+  if (dB > 10) return false;
+  for (const q of w.O) if (q !== o && q.cd <= 0 && q.role === 'def' && Math.hypot(B.x - q.x, B.y - q.y) < dB) return false;
+  return true;
+}
+// 体どうし（自分と相手・相手どうし）。相手がボールを持っているのに黙って当たるとファウル
+function bodies(w) {
+  const P = w.P, all = [P, ...w.O];
+  for (let a = 0; a < all.length; a++) for (let b = a + 1; b < all.length; b++) {
+    const p = all[a], q = all[b], dx = q.x - p.x, dy = q.y - p.y, d = Math.hypot(dx, dy), m = PR * 2;
+    if (d < m && d > 1e-6) {
+      const nx = dx / d, ny = dy / d, push = (m - d) / 2;
+      p.x = clamp(p.x - nx * push, PR, PL - PR); p.y = clamp(p.y - ny * push, PR, PW - PR);
+      q.x = clamp(q.x + nx * push, PR, PL - PR); q.y = clamp(q.y + ny * push, PR, PW - PR);
+      if (p === P) {
+        // 相手が持って 0.7 秒すぎ・自分から寄って（近づく速さ 0.5 m/s 以上）・叫びが切れていたらファウル
+        const closing = (Math.cos(P.a) * P.spd - Math.sin(P.a) * (P.sspd || 0)) * nx + (Math.sin(P.a) * P.spd + Math.cos(P.a) * (P.sspd || 0)) * ny;
+        if (w.B.owner === q.i && w.t - w.oppHoldT > SCRAMBLE && closing > 0.5 && !voyOK(w)) { foul(w); return; }
+        if (w.t - P.bodyT > 0.7) { P.bodyT = w.t; w.ev.push({ k: 'body', x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 }); }
+      }
+    }
+  }
+}
+function ownerDecay(w) {
+  const B = w.B;
+  if (B.owner === 'P') { if (Math.hypot(B.x - w.P.x, B.y - w.P.y) > 1.5) B.owner = null; }
+  else if (typeof B.owner === 'number') { const o = w.O[B.owner]; if (!o || Math.hypot(B.x - o.x, B.y - o.y) > 1.5) B.owner = null; }
+}
+
+function ballPhys(w) {
+  const B = w.B, P = w.P;
+  let v = Math.hypot(B.vx, B.vy);
+  if (v > 0) { const nv = Math.max(0, v - (FRIC + DRAG * v) * DT); B.vx *= nv / v; B.vy *= nv / v; }
+  const ox = B.x; B.x += B.vx * DT; B.y += B.vy * DT;
+  // 板（両サイド）
+  if (B.y < BR) { B.y = BR; if (B.vy < 0) { const iv = -B.vy; B.vy = iv * REST_BOARD; B.vx *= 0.85; if (iv > 0.25) w.ev.push({ k: 'board', x: B.x, y: 0, v: iv }); } }
+  if (B.y > PW - BR) { B.y = PW - BR; if (B.vy > 0) { const iv = B.vy; B.vy = -iv * REST_BOARD; B.vx *= 0.85; if (iv > 0.25) w.ev.push({ k: 'board', x: B.x, y: PW, v: iv }); } }
+  // ポスト
+  for (const px of [0, PL]) for (const py of [GY - GHW, GY + GHW]) {
+    const dx = B.x - px, dy = B.y - py, d = Math.hypot(dx, dy), m = BR + POST_R;
+    if (d < m && d > 1e-6) {
+      const nx = dx / d, ny = dy / d, vn = B.vx * nx + B.vy * ny;
+      if (vn < 0) { B.vx -= 1.6 * vn * nx; B.vy -= 1.6 * vn * ny; if (-vn > 0.3) w.ev.push({ k: 'postHit', x: px, y: py, v: -vn, att: px === PL && w.state === 'play' }); }
+      B.x = px + nx * m; B.y = py + ny * m;
+    }
+  }
+  if (w.state === 'play') {
+    if (ox <= PL && B.x > PL) {
+      if (Math.abs(B.y - GY) < GHW - BR * 0.5) {
+        B.vx *= 0.4; B.vy *= 0.4; endRound(w, { ok: true, state: 'goal' }, 5);
+        w.ev.push({ k: 'goal', x: PL, y: B.y });
+      } else { w.ev.push({ k: 'miss', side: B.y > GY ? 'R' : 'L' }); outBall(w, PL - 2.5, B.y, true); }
+    } else if (ox >= 0 && B.x < 0) {
+      if (w.O.length && Math.abs(B.y - GY) < GHW - BR * 0.5) {     // こちらのゴールに入った＝決められた（相手がいるときだけ）
+        B.vx *= 0.4; B.vy *= 0.4; endRound(w, { ok: false, state: 'lost', lost: true }, 4.5);
+        w.ev.push({ k: 'oppgoal', x: 0, y: B.y });
+      } else outBall(w, 2.5, B.y);
+    }
+  } else if (B.x > PL + 0.7) { B.x = PL + 0.7; B.vx = 0; B.vy *= 0.3; }   // ネット
+  else if (B.x < -0.7) { B.x = -0.7; B.vx = 0; B.vy *= 0.3; }
+  // 体に当たる（自分も相手も）
+  for (const b of [P, ...w.O]) {
+    const dx = B.x - b.x, dy = B.y - b.y, d = Math.hypot(dx, dy), m = PR + BR;
+    if (d < m && d > 1e-6) {
+      const nx = dx / d, ny = dy / d; B.x = b.x + nx * m; B.y = b.y + ny * m;
+      const pvx = Math.cos(b.a) * b.spd - Math.sin(b.a) * (b.sspd || 0), pvy = Math.sin(b.a) * b.spd + Math.cos(b.a) * (b.sspd || 0);
+      const rel = (B.vx - pvx) * nx + (B.vy - pvy) * ny;
+      if (rel < 0) {
+        if (b === P && w.state === 'play' && pvx * nx + pvy * ny > 0.5) {
+          const oo = oppOwner(w);
+          if (oo && w.t - w.oppHoldT > SCRAMBLE) {
+            if (!voyOK(w)) { foul(w); }
+            else { oo.cd = 1.0; oo.carryT = 0; P.voyOn = false; w.ev.push({ k: 'steal', by: 'P', knock: true, x: B.x, y: B.y }); }
+          }
+        }
+        B.vx -= 1.5 * rel * nx; B.vy -= 1.5 * rel * ny; if (-rel > 0.5) w.ev.push({ k: 'bump', x: B.x, y: B.y });
+      }
+    }
+  }
+  // 鈴：転がる速さで鳴り方が変わる・止まると鳴らない
+  v = Math.hypot(B.vx, B.vy);
+  if (v > 0.15) {
+    B.jPh += DT * Math.min(60, 3 + v * 6);
+    while (B.jPh >= 1) { B.jPh -= 1; w.ev.push({ k: 'jingle', x: B.x, y: B.y, v }); }
+    B.idle = 0;
+  } else if (w.state === 'play') {
+    const near = Math.hypot(B.x - P.x, B.y - P.y) < 1.3 || w.O.some(o => Math.hypot(B.x - o.x, B.y - o.y) < 1.3);
+    if (w.assist || w.type === 'tut') {   // 補助（レベル 1〜2・お手本）：止まっていても 1 秒ごとに小さく「チリン」
+      B.idle += DT;
+      if (B.idle > 1.0) { B.idle = 0; if (!possessBy(P, B)) w.ev.push({ k: 'chirp', x: B.x, y: B.y }); }
+    } else if (!near) {   // 持ち主が自分でも、1.3 m より遠くで止まっていれば転がす（本物どおり）
+      B.idle += DT;
+      if (B.idle > 2.0) {    // 審判が軽く動かして鳴らす（IBSA Law 2）
+        const ang = Math.atan2(GY - B.y, PL / 2 - B.x) + (w.rng() - 0.5) * 2.4;
+        B.vx = Math.cos(ang) * 1.4; B.vy = Math.sin(ang) * 1.4; B.idle = 0; B.jPh = 0.9; B.owner = null;
+        w.ev.push({ k: 'nudge', x: B.x, y: B.y });
+      }
+    } else B.idle = 0;
+  }
+}
+function outBall(w, x, y, quiet) {
+  const B = w.B; B.x = x; B.y = clamp(y, 1, PW - 1); B.vx = B.vy = 0; B.idle = 1.2; B.owner = null;
+  w.ev.push({ k: 'out', x, y: B.y, quiet });
+}
+
+/* ====================== 自動で遊ぶ（?bot・simRounds） ====================== */
+const IDLE_IN = () => ({ fwd: 0, strafe: 0, turn: 0, snap: 0, dash: false, kick: null, ask: false, voy: false });
+function botInput(w) {
+  const inp = IDLE_IN(); if (w.state !== 'play') { w.botHave = false; return inp; }
+  const P = w.P, B = w.B, gx = PL + 0.3;
+  const rb = relBall(w), dG = Math.hypot(gx - P.x, GY - P.y), angG = angDiff(Math.atan2(GY - P.y, gx - P.x), P.a);
+  const turnTo = a => Math.abs(a) > 0.04 ? Math.sign(a) : 0;
+  const oo = oppOwner(w);
+  if (oo && rb.d < 5 && !P.voyOn) inp.voy = true;       // 相手のボールに寄る前に叫ぶ
+  let near = null, nd = 99;
+  for (const o of w.O) { const d = Math.hypot(o.x - P.x, o.y - P.y); if (d < nd) { nd = d; near = o; } }
+  w.botHave = !oo && (possess(w) || (w.botHave && rb.d < 1.2));
+  if (w.botHave) {
+    let aim = angG;
+    if (near && nd < 3.5) {     // 前の相手をよける
+      const ao = angDiff(Math.atan2(near.y - P.y, near.x - P.x), P.a);
+      if (Math.abs(ao) < 1.2) aim = angG - Math.sign(ao || 1) * 0.9;
+    }
+    if (Math.abs(rb.ang) < 0.6 && rb.d < 1.0 && w.kickCD <= 0 && Math.abs(angG) < 0.07 && (dG < 11 || (near && nd < 2.2 && dG < 18))) { inp.kick = dG < 11 ? 0.55 : 0.8; return inp; }
+    if (Math.abs(rb.ang) > 0.6) { inp.turn = turnTo(rb.ang); inp.fwd = 0.5; }
+    else { inp.turn = turnTo(aim); inp.fwd = Math.abs(aim) < 0.5 ? 1 : 0.5; }
+    return inp;
+  }
+  // ボールの「ゴールと反対がわ」（板からは離れた点）に回りこんでから寄る。相手が持っていればまっすぐ寄る
+  const toG = Math.atan2(GY - B.y, gx - B.x);
+  const bx = B.x + B.vx * 0.35, by = B.y + B.vy * 0.35;
+  let tx = clamp(bx - Math.cos(toG) * 0.8, 0.6, PL - 0.6), ty = clamp(by - Math.sin(toG) * 0.8, 0.7, PW - 0.7);
+  if (oo || Math.hypot(tx - P.x, ty - P.y) < 0.45 || w.botNear) { w.botNear = rb.d < 1.6; tx = bx; ty = by; }
+  const a = angDiff(Math.atan2(ty - P.y, tx - P.x), P.a);
+  inp.turn = turnTo(a); inp.fwd = Math.abs(a) < 0.7 ? (rb.d > 3 ? 1 : 0.6) : 0.15;
+  if (oo && !voyOK(w) && rb.d < 1.6) inp.fwd = 0;   // 叫びが切れていたら寄らずに待つ（黙って当たらない）
+  return inp;
+}
+window.simRounds = function (n = 20, seed = 1, quiet) {
+  const w = newWorld(seed >>> 0, { auto: true }); let steps = 0;
+  while (w.results.length < n && steps < n * 100 * 60) { step(w, botInput(w)); w.ev.length = 0; steps++; }
+  const avg = a => a.length ? +(a.reduce((s, x) => s + x, 0) / a.length).toFixed(1) : null;
+  const sum = r => {
+    const goals = r.filter(x => x.ok);
+    return { rounds: r.length, reached: r.filter(x => x.first != null).length, goals: goals.length, goalsIn60: goals.filter(x => x.time <= 60).length,
+      fouls: r.filter(x => x.foul).length, lost: r.filter(x => x.lost).length, timeups: r.filter(x => x.state === 'timeup').length,
+      stolen: r.reduce((s, x) => s + (x.stolen || 0), 0), stars: r.reduce((s, x) => s + (x.stars || 0), 0), avgFirstTouch: avg(r.filter(x => x.first != null).map(x => x.first)), avgGoalTime: avg(goals.map(x => x.time)) };
+  };
+  const out = { all: sum(w.results), bestStreak: w.bestStreak, endOppLv: w.oppLv };
+  for (const t of ['solo', 'attack1', 'attack2', 'defend']) { const r = w.results.filter(x => x.type === t); if (r.length) out[t] = sum(r); }
+  if (!quiet) console.log('simRounds', out);
+  return out;
+};
+
+/* ====================== PK たいけつ（ステップ5） ======================
+   本物どおり PK は 6 m、ゴール 3.66 × 2.14。蹴る人と GK を 1 本ごとに交代して 5 本ずつ。
+   蹴る人：GK が 2 秒ごとに手を叩いて「こい！」。ねらいは ←／→ ちょんで 5°（PK のときだけ細かく・6 m 先の枠は ±17°）、
+           Space 長押しで強さ（弱いと取られやすい・強いとブレて外しやすい）。ガイドがポストを叩いて枠の左右を教える。
+   GK　　：蹴る人の「ねらいを変えるカチ」が聞こえる（その向きから・高さ＝真ん中からのずれ）。
+           「ドン」のあと 0.35 秒以内に ←／→／Space（真ん中）で飛ぶ。早く飛ぶほど届くが、読みが外れる。
+   世界は「A」と「B」の 2 人。この画面の人は PKME（コンピューター相手と、ネットの親は A・ネットの子は B） */
+const PK_SPOT = PL - 6, PK_N = 5, PK_STEP = 5 * D2R, PK_MAX = 25 * D2R, PK_GKX = PL - 0.3;
+let PKME = 'A';
+let PK_EXT = 1.2, PK_READ = 0.4;   // GK が飛んで届く横の長さ（m）・コンピューターの GK がカチで読める確率（入る率 60〜75% に合わせた）
+function newPK(seed, opts) {
+  opts = opts || {};
+  const w = { type: 'pk', seed, rng: rng32(seed), t: 0, ev: [], pend: [], results: [], O: [], stepSide: 0, auto: !!opts.auto, assist: false,
+    lastKickT: -9, state: 'play', roundT: 0, touches: 0, roundNo: 0, endAt: 0, firstTouch: null,
+    P: { x: PK_SPOT - 1, y: GY, a: 0, spd: 0, stepPh: 0, exert: 0, stillT: 0, snapLeft: 0, voyT: -9 },
+    B: { x: PK_SPOT, y: GY, vx: 0, vy: 0, owner: null, jPh: 0, idle: 0 },
+    pk: { n: 0, score: { A: 0, B: 0 }, log: [], first: opts.first || 'A' } };
+  pkSetup(w); return w;
+}
+const pkOther = s => s === 'A' ? 'B' : 'A';
+function pkSetup(w) {
+  const k = w.pk, B = w.B;
+  k.kicker = (k.n % 2 === 0) ? k.first : pkOther(k.first); k.keeper = pkOther(k.kicker);
+  Object.assign(k, { phase: 'aim', aim: 0, aimTarget: 0, clickIdx: 0, gkY: GY, gkTarget: GY, dive: null, diveT: null, kickT: null, T: 0, yl: null, out: null,
+    clapT: 0.6, guideT: 0.3, aiK: null, aiG: null, t0: w.t });
+  B.x = PK_SPOT; B.y = GY; B.vx = B.vy = 0; B.jPh = 0;
+  w.state = 'play'; w.roundT = 0; w.roundNo++;
+  w.ev.push({ k: 'pkStart', n: k.n, kicker: k.kicker, first: k.n < 2, A: k.score.A, B: k.score.B });
+  pkView(w);
+}
+function pkGkShow(k, t) {   // 見た目の GK の横の場所（飛んでいる間は飛んだ側へ）
+  if (k.dive == null || k.kickT == null || !k.dive) return k.gkY;
+  return k.gkY + k.dive * clamp((t - k.kickT - k.diveT) / 0.35, 0, 1) * PK_EXT;
+}
+function pkView(w) {   // この画面の人の目（P）と、もう 1 人（O[0]）を置く
+  const k = w.pk, P = w.P, gy = pkGkShow(k, w.t);
+  const gk = { x: PK_GKX, y: gy, a: Math.PI }, kc = { x: PK_SPOT - 1, y: GY, a: k.aim };
+  const o = w.O[0] || (w.O[0] = { i: 0, voyT: -9, spd: 0 });
+  if (k.kicker === PKME) { Object.assign(P, kc); Object.assign(o, gk); } else { Object.assign(P, gk); Object.assign(o, kc); }
+  P.spd = 0;
+}
+function pkStep(w, inA, inB) {
+  w.t += DT;
+  for (let i = w.pend.length - 1; i >= 0; i--) if (w.pend[i].t <= w.t) { w.ev.push(w.pend[i].e); w.pend.splice(i, 1); }
+  const k = w.pk, B = w.B;
+  if (k.phase === 'between' || k.phase === 'over') {
+    B.x += B.vx * DT; B.y += B.vy * DT; B.vx *= 0.9; B.vy *= 0.9;
+    if (k.phase === 'between' && w.t >= k.nextT) pkNext(w);
+    else if (k.phase === 'over' && w.auto && w.t >= k.nextT) { w.results.push({ A: k.score.A, B: k.score.B }); w.pk = { n: 0, score: { A: 0, B: 0 }, log: [], first: pkOther(k.first) }; pkSetup(w); }
+    pkView(w); return;
+  }
+  w.roundT += DT;
+  const inK = k.kicker === 'A' ? inA : inB, inG = k.keeper === 'A' ? inA : inB;
+  if (k.phase === 'aim') {
+    // ガイドがポストを叩く（蹴る人の目印）・GK が 2 秒ごとに手を叩いて「こい！」
+    k.guideT -= DT; if (k.guideT <= 0) { k.guideT = 1.6; w.ev.push({ k: 'post', side: 0, x: PL, y: GY - GHW }); w.pend.push({ t: w.t + 0.3, e: { k: 'post', side: 1, x: PL, y: GY + GHW } }); }
+    k.clapT -= DT; if (k.clapT <= 0) { k.clapT = 2; w.ev.push({ k: 'pkClap', x: PK_GKX, y: k.gkY }); }
+    // GK は蹴る前に左右へ少し動ける（ちょん 1 回で 0.3 m・±0.6 m まで）。GK の → は -y
+    if (inG.snap) k.gkTarget = clamp(k.gkTarget - Math.sign(inG.snap) * 0.3, GY - 0.6, GY + 0.6);
+    k.gkY += clamp(k.gkTarget - k.gkY, -1.5 * DT, 1.5 * DT);
+    // ねらい：ちょん＝5°・長押し＝毎秒 25°。5° ごとに「カチ」（GK にも聞こえる）
+    if (inK.snap) k.aimTarget = clamp(k.aimTarget + inK.snap * PK_STEP, -PK_MAX, PK_MAX);
+    if (inK.turn) k.aimTarget = clamp(k.aimTarget + inK.turn * 25 * D2R * DT, -PK_MAX, PK_MAX);
+    k.aim += clamp(k.aimTarget - k.aim, -150 * D2R * DT, 150 * D2R * DT);
+    const ci = Math.round(k.aim / PK_STEP);
+    while (ci !== k.clickIdx) { k.clickIdx += Math.sign(ci - k.clickIdx); w.ev.push({ k: 'pkAim', aim: k.clickIdx * PK_STEP, kicker: k.kicker }); }
+    // 蹴る（始まって 0.8 秒から）
+    if (inK.kick != null && w.t - k.t0 > 0.8) {
+      const p = clamp((inK.kick - 0.1) / 0.7, 0, 1), speed = 8 + 12 * p, spread = (1 + 4 * p * p) * D2R;
+      const dir = k.aim + (w.rng() * 2 - 1) * spread, dist = PL - PK_SPOT;
+      k.yl = GY + dist * Math.tan(dir); k.T = dist / Math.cos(dir) / speed; k.kickT = w.t; k.speed = speed; k.power = p;
+      B.vx = Math.cos(dir) * speed; B.vy = Math.sin(dir) * speed; k.phase = 'flight'; w.lastKickT = w.t;
+      w.ev.push({ k: 'kick', x: B.x, y: B.y, p: (speed - 4) / 16, chon: false }, { k: 'pkKick', kicker: k.kicker, p });
+    }
+  } else if (k.phase === 'flight') {
+    const tk = w.t - k.kickT;
+    B.x += B.vx * DT; B.y += B.vy * DT;
+    B.jPh += DT * Math.min(60, 3 + k.speed * 6); while (B.jPh >= 1) { B.jPh -= 1; w.ev.push({ k: 'jingle', x: B.x, y: B.y, v: k.speed }); }
+    // GK が飛ぶ：→＝GK の右（-y）・←＝左（+y）・Space＝真ん中。「ドン」から 0.35 秒まで
+    if (k.dive == null && tk <= 0.35 && !(w.netKeeperB && k.keeper === 'B')) {   // ネットの子の GK は 'dv' で来る
+      let d = null;
+      if (inG.snap) d = -Math.sign(inG.snap); else if (inG.kick != null) d = 0;
+      if (d != null) { k.dive = d; k.diveT = tk; w.ev.push({ k: 'pkDive', d, x: PK_GKX, y: k.gkY, keeper: k.keeper }); }
+    }
+    // ネットの子が GK のときは、飛んだ知らせ（往復の遅れつき）を 0.8 秒まで待つ
+    if (tk >= k.T && (!(w.netKeeperB && k.keeper === 'B') || k.dive != null || tk >= Math.max(k.T, 0.8))) pkResolve(w);
+  }
+  pkView(w);
+}
+function pkResolve(w) {
+  const k = w.pk, B = w.B, off = Math.abs(k.yl - GY), d = k.yl - k.gkY;
+  const inFrame = off < GHW - BR, post = !inFrame && off < GHW + BR + POST_R;
+  let saved = false;
+  if (inFrame) {
+    if (k.dive == null) saved = Math.abs(d) < 0.5;                  // 立ったまま：体のまわりだけ
+    else if (k.dive === 0) saved = Math.abs(d) < 1.0;               // 真ん中に構える
+    else { const ext = clamp((k.T - k.diveT) / 0.35, 0, 1) * PK_EXT, s = k.dive * d; saved = s > -0.3 && s < 0.5 + ext; }   // 早く飛ぶほど届く
+  }
+  k.out = post ? 'post' : !inFrame ? 'miss' : saved ? 'save' : 'goal';
+  if (k.out === 'goal') k.score[k.kicker]++;
+  const sk = Math.abs(k.yl - GY) < 0.35 ? 0 : Math.sign(k.yl - GY);
+  const rec = { n: k.n, kicker: k.kicker, out: k.out, sk, dive: k.dive, aim: k.aim, p: k.power }; k.log.push(rec); (w.allKicks || (w.allKicks = [])).push(rec);
+  B.x = PL + (k.out === 'goal' ? 0.5 : -0.1); B.y = clamp(k.yl, 0.5, PW - 0.5);
+  B.vx = k.out === 'save' ? -3 : k.out === 'goal' ? 0.5 : 0; B.vy = 0;
+  if (k.out === 'post') w.ev.push({ k: 'postHit', x: PL, y: GY + Math.sign(k.yl - GY) * GHW, v: k.speed, att: false });
+  w.ev.push({ k: 'pkResult', kicker: k.kicker, out: k.out, sk, dive: k.dive, A: k.score.A, B: k.score.B, n: k.n, x: PL, y: B.y });
+  k.phase = 'between'; k.nextT = w.t + 3.4; w.state = 'between';
+}
+function pkNext(w) {
+  const k = w.pk; k.n++;
+  if (k.n >= PK_N * 2) { k.phase = 'over'; k.nextT = w.t + 4; w.state = 'over'; w.endAt = w.t; w.ev.push({ k: 'pkOver', A: k.score.A, B: k.score.B }); return; }
+  pkSetup(w);
+}
+// コンピューター：蹴る人は ねらいを決め、ときどき逆を聞かせてから戻す（フェイント）。GK はカチを聞いて読む
+function pkAI(w, side, ready = true) {   // ready＝声を話し終わった（画面の側から。simPK では いつも true）
+  const k = w.pk, inp = IDLE_IN();
+  if (k.phase === 'aim' && k.kicker === side) {
+    if (!k.aiK && ready) {
+      const s = w.rng() < 0.5 ? -1 : 1;
+      const goal = Math.round((s * (7 + w.rng() * 6)) * D2R / PK_STEP);                                 // 終わりのねらい（5° の段・±5〜10°）
+      const feint = w.rng() < 0.4 ? -Math.sign(goal) * (1 + Math.floor(w.rng() * 2)) : null;
+      k.aiK = { plan: feint != null ? [feint, goal] : [goal], i: 0, nextT: w.t + 1 + w.rng(), kickDur: 0.25 + w.rng() * 0.55, wait: 0 };
+    }
+    const a = k.aiK, cur = Math.round(k.aimTarget / PK_STEP);
+    if (a && w.t >= a.nextT) {
+      if (a.i < a.plan.length) {
+        if (cur !== a.plan[a.i]) { inp.snap = Math.sign(a.plan[a.i] - cur); a.nextT = w.t + 0.2; }
+        else { a.i++; a.nextT = w.t + (a.i < a.plan.length ? 0.5 + w.rng() * 0.4 : 0.4 + w.rng() * 0.5); }
+      } else if (Math.abs(k.aim - k.aimTarget) < 0.01) inp.kick = a.kickDur;
+    }
+  } else if (k.keeper === side) {
+    if (k.phase === 'aim') {
+      if (!k.aiG) k.aiG = { shuffleT: w.t + 1 + w.rng() };
+      if (w.t >= k.aiG.shuffleT) { k.aiG.shuffleT = w.t + 1.5 + w.rng(); inp.snap = w.rng() < 0.5 ? -1 : 1; }
+    } else if (k.phase === 'flight' && k.dive == null) {
+      if (!k.aiG.plan) {   // 読む：カチで聞いた最後のねらいの側へ（ねらいが小さいと真ん中）。強い球ほど読みにくい
+        const heard = Math.abs(k.aim) < 6 * D2R ? 0 : Math.sign(k.aim), r = w.rng(), readP = PK_READ - 0.2 * k.power;
+        const side2 = r < readP ? heard : r < readP + 0.2 ? 0 : -heard || (w.rng() < 0.5 ? 1 : -1);
+        k.aiG.plan = { t: 0.06 + w.rng() * 0.22, d: side2 };
+      }
+      if (w.t - k.kickT >= k.aiG.plan.t) { const d = k.aiG.plan.d; if (d === 0) inp.kick = 0; else inp.snap = -d; }   // 世界の +y＝GK の左（←）
+    }
+  }
+  return inp;
+}
+window.simPK = function (n = 50, seed = 1) {   // コンピューター同士で n 本：入る率
+  const w = newPK(seed >>> 0, { auto: true }); let st = 0;
+  while ((w.allKicks || []).length < n && st < n * 60 * 20) { pkStep(w, pkAI(w, 'A'), pkAI(w, 'B')); w.ev.length = 0; st++; }
+  const kicks = w.allKicks || [];
+  const c = o => kicks.filter(x => x.out === o).length;
+  const out = { kicks: kicks.length, goal: c('goal'), save: c('save'), miss: c('miss'), post: c('post'), rate: Math.round(c('goal') / kicks.length * 100) + '%' };
+  console.log('simPK', out); return out;
+};
+// この画面の人から見た 左右（蹴る人は +y＝右、GK は +y＝左）
+function pkLR(sideWorld, iKick) { if (!sideWorld) return 0; return iKick ? sideWorld : -sideWorld; }
+function pkEv(e) {   // PK の出来事 → 音と声（どちらの画面でも、自分の向きで言う）
+  const A = !!AC.ctx && !SILENT, k = W.pk, iKick = (e.kicker || k.kicker) === PKME;
+  switch (e.k) {
+    case 'pkStart': {
+      setMsg('');
+      const s = e.A != null ? { A: e.A, B: e.B } : k.score, me = s[PKME], them = s[pkOther(PKME)], kickNo = Math.floor(e.n / 2) + 1;
+      say((e.kicker === PKME ? (e.first ? T.pk.youKickLong : T.pk.youKick) : (e.first ? T.pk.youKeepLong : T.pk.youKeep)) + ' ' + T.pk.score(me, them, kickNo));
+      break;
+    }
+    case 'pkClap': if (A) SND.gkCall(e.x, e.y); rip(e.x, e.y, 'gk', 1.2); break;
+    case 'pkAim':
+      if (A) { if (iKick) SND.tick(); else SND.aimClick(PL, GY + (PL - PK_SPOT) * Math.tan(e.aim), Math.abs(e.aim) / PK_MAX); }
+      break;
+    case 'pkKick': NETKICK = performance.now(); snapQ = 0; NETIN.sentDv = false; break;   // 子の GK：ここから飛ぶまでを測る・構えの古いキーは捨てる
+    case 'pkDive': if (A) SND.dive(e.x, e.y); break;
+    case 'pkResult': {
+      const iK = e.kicker === PKME, kd = pkLR(e.sk, iK), gd = e.dive == null ? null : pkLR(e.dive, iK);
+      const P = T.pk, kdW = kd > 0 ? P.R : kd < 0 ? P.L : P.C, gdW = gd == null ? P.stay : gd > 0 ? P.diveR : gd < 0 ? P.diveL : P.diveC;
+      const res = P.res[e.out][iK ? 0 : 1];
+      if (A) { if (e.out === 'goal') { SND.net(); if (iK) SND.cheer(); } else if (e.out === 'save') SND.clash(e.x, e.y, true); else if (e.out === 'miss') SND.whistle(0.3); }
+      rip(e.x, e.y, e.out === 'goal' ? 'goal' : 'voy', 2);
+      const me = PKME === 'A' ? e.A : e.B, them = PKME === 'A' ? e.B : e.A;
+      const line = (iK ? P.kickLine(kdW, gdW, res) : P.keepLine(kdW, gdW, res)) + ' ' + P.now(me, them);
+      setMsg(line); setTimeout(() => say(line), 600);
+      break;
+    }
+    case 'pkOver': {
+      const me = PKME === 'A' ? e.A : e.B, them = PKME === 'A' ? e.B : e.A, P = T.pk;
+      let st = 0; try { st = +(localStorage.getItem('voy_pk_streak') || 0); } catch (x) {}
+      st = me > them ? st + 1 : 0; let best = 0; try { best = +(localStorage.getItem('voy_pk_best') || 0); if (!BOT) { localStorage.setItem('voy_pk_streak', String(st)); if (st > best) localStorage.setItem('voy_pk_best', String(st)); } } catch (x) {}
+      const txt = P.over(me, them) + (st >= 2 ? ' ' + P.streak(st) : '') + (st > best && st >= 2 ? ' ' + T.newRec : '') + (W.auto ? '' : ' ' + P.again);
+      setMsg((me > them ? '🏆 ' : '') + txt); setTimeout(() => say(txt), 900);
+      if (A) { if (me > them) SND.cheer(); SND.whistle(0.8); }
+      break;
+    }
+    default: return false;
+  }
+  return true;
+}
+function beginPK() { W = newPK(SEED0, { auto: BOT }); MODE.m = 'play'; setMsg(''); }
+function pkRestart() { if (!NET) beginPK(); else if (NET.role === 'host') netStart(); else netSend({ t: 're' }); }
+
+/* ====================== PK のネットたいせん（あんずもうと同じ親子方式） ======================
+   合言葉 4 けた。親（合言葉をつくった人＝A）がゲームを動かし、子（B）はキー（ちょん・長押し・蹴る/飛ぶ）だけ送る。
+   親は 20 回/秒で様子を送り、出来事（カチ・ドン・飛んだ・結果…）はそのまま送る＝子は自分の向きで その場で鳴らす。
+   PeerJS（cdnjs から使うときだけ読む）。会社のプロキシ・アーティファクトのページではつながらない */
+let NET = null, NETKICK = 0;
+const NETIN = { snap: 0, turn: 0, kick: null };
+function netMsg(t, quiet) { const e = document.getElementById('netMsg'); if (e) e.textContent = t; if (quiet) live(t); else say(t); }
+function netSend(m) { try { if (NET && NET.conn && NET.conn.open) NET.conn.send(m); } catch (e) {} }
+function loadPeer() { return new Promise((ok, ng) => { if (window.Peer) return ok(); const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js'; sc.onload = () => ok(); sc.onerror = () => ng(new Error('load')); document.head.appendChild(sc); }); }
+function netClose() { if (NET) { try { NET.conn && NET.conn.close(); } catch (e) {} try { NET.peer && NET.peer.destroy(); } catch (e) {} } NET = null; PKME = 'A'; }
+function netLost() {
+  if (!NET) return; netClose();
+  if (MODE.m === 'play' || MODE.m === 'pause') { MODE.m = 'title'; buildMenu(); document.getElementById('menu').style.display = 'flex'; }
+  netMsg(T.net.lost);
+}
+function netWire(c) { NET.conn = c; NET.rx = performance.now(); c.on('data', m => { if (NET) NET.rx = performance.now(); onNet(m); }); c.on('close', netLost); c.on('error', netLost); }
+setInterval(() => { if (!NET || !NET.conn || !NET.conn.open) return; netSend({ t: 'pg' }); if (performance.now() - NET.rx > 6000) netLost(); }, 1000);   // 相手が閉じた・電波が切れた
+async function netHost() {
+  netClose(); audioInit(); netMsg(T.net.prep, true);
+  try { await loadPeer(); } catch (e) { netMsg(T.net.noLib); return; }
+  const code = String(1000 + Math.floor(Math.random() * 9000)), peer = new Peer('voy-pk-' + code); NET = { role: 'host', peer, code };
+  peer.on('open', () => { netMsg(T.net.code(code), true); say(T.net.codeSay(code.split('').join('、'))); });
+  peer.on('connection', c => {
+    if (NET.conn) { c.on('open', () => { try { c.send({ t: 'full' }); } catch (e) {} setTimeout(() => c.close(), 400); }); return; }   // 3 人目は断る
+    netWire(c); c.on('open', () => { netMsg(T.net.ok); netStart(); });
+  });
+  peer.on('error', e => { if (e.type === 'unavailable-id') netHost(); else netMsg(T.net.fail(e.type)); });
+}
+async function netJoin() {
+  const code = (document.getElementById('netCode').value || '').replace(/\D/g, '');
+  if (code.length !== 4) { netMsg(T.net.need4); return; }
+  netClose(); audioInit(); netMsg(T.net.joining, true);
+  try { await loadPeer(); } catch (e) { netMsg(T.net.noLib); return; }
+  const peer = new Peer(); NET = { role: 'guest', peer, code };
+  peer.on('open', () => {
+    const c = peer.connect('voy-pk-' + code, { reliable: true }); netWire(c);
+    c.on('open', () => { netMsg(T.net.okWait); netSend({ t: 'hi' }); });
+    setTimeout(() => { if (NET && NET.role === 'guest' && !(NET.conn && NET.conn.open)) netMsg(T.net.notFound); }, 9000);
+  });
+  peer.on('error', e => netMsg(e.type === 'peer-unavailable' ? T.net.noOne : T.net.fail(e.type)));
+}
+function netStart() {   // 親：新しい試合（先に蹴る人は かわりばんこ）
+  const seed = (Math.random() * 4294967296) >>> 0, first = NET.first = NET.first === 'A' ? 'B' : 'A';
+  PKME = 'A'; PLAYMODE = 'pk'; hideMenu(); W = newPK(seed, { first }); W.netKeeperB = true; MODE.m = 'play'; setMsg('');
+  netSend({ t: 'start', seed, first });
+}
+function netSnap() {
+  const k = W.pk, n = v => v == null ? null : Math.round(v * 1e4) / 1e4;
+  return { t: 'snap', wt: n(W.t), b: [n(W.B.x), n(W.B.y)], k: { n: k.n, sc: k.score, ki: k.kicker, ph: k.phase, aim: n(k.aim), gy: n(k.gkY), dv: k.dive, dt: n(k.diveT), kt: n(k.kickT), T: n(k.T) } };
+}
+function netApply(m) {
+  const k = W.pk, s = m.k; W.t = m.wt; W.B.x = m.b[0]; W.B.y = m.b[1];
+  Object.assign(k, { n: s.n, score: s.sc, kicker: s.ki, keeper: pkOther(s.ki), phase: s.ph, aim: s.aim, gkY: s.gy, dive: s.dv, diveT: s.dt, kickT: s.kt, T: s.T });
+  W.state = s.ph === 'aim' || s.ph === 'flight' ? 'play' : s.ph;
+  if (s.ph === 'over' && !W.endAt) W.endAt = W.t;
+  pkView(W);
+}
+function onNet(m) {
+  if (!NET) return;
+  if (NET.role === 'host') {
+    if (m.t === 'in') { NETIN.snap += m.s || 0; NETIN.turn = m.tr || 0; if (m.k != null) NETIN.kick = m.k; }
+    else if (m.t === 'dv') {   // 子の GK が飛んだ：子が測った「ドンから」の秒数で判定
+      const k = W.pk;
+      if (W.type === 'pk' && k.phase === 'flight' && k.keeper === 'B' && k.dive == null && m.dt <= 0.35) { k.dive = m.d; k.diveT = Math.max(0, m.dt); W.ev.push({ k: 'pkDive', d: m.d, x: PK_GKX, y: k.gkY, keeper: 'B' }); }
+    }
+
+    else if (m.t === 're' && W.type === 'pk' && W.pk.phase === 'over') netStart();
+  } else {
+    if (m.t === 'full') { netMsg(T.net.full); const n = NET; NET = null; PKME = 'A'; try { n.conn.close(); n.peer.destroy(); } catch (e) {} return; }   // 先に NET を消す＝「切れました」と言わない
+    if (m.t === 'start') { PKME = 'B'; PLAYMODE = 'pk'; hideMenu(); W = newPK(m.seed, { first: m.first }); W.netGuest = true; W.ev = []; MODE.m = 'play'; setMsg(''); }
+    else if (m.t === 'snap' && W.netGuest) netApply(m);
+    else if (m.t === 'ev' && W.netGuest) for (const e of m.a) handleEv(e);
+  }
+}
+function netTakeIn() { const i = Object.assign(IDLE_IN(), { snap: clamp(NETIN.snap, -6, 6), turn: NETIN.turn, kick: NETIN.kick }); NETIN.snap = 0; NETIN.kick = null; return i; }
+function netGuestTick() {   // 子：自分のキーを送るだけ（世界は親が動かす）
+  const i = keyInput();
+  if (i.snap || i.kick != null || i.turn !== NETIN.lastTurn) { netSend({ t: 'in', s: i.snap, tr: i.turn, k: i.kick }); NETIN.lastTurn = i.turn; }
+  pkView(W);
+}
+
+/* ====================== 音（Web Audio・全部その場で作る） ====================== */
+const AC = { ctx: null }, SRC = {};
+const REF = 2, ROLL = 1;
+function audioInit() {
+  if (AC.ctx) { if (AC.ctx.state === 'suspended') AC.ctx.resume(); return; }
+  try { AC.ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { AC.ctx = null; return; }
+  const c = AC.ctx, sr = c.sampleRate;
+  AC.comp = c.createDynamicsCompressor(); AC.comp.threshold.value = -10; AC.comp.knee.value = 6; AC.comp.ratio.value = 6; AC.comp.attack.value = 0.003; AC.comp.release.value = 0.15;
+  AC.master = c.createGain(); AC.master.gain.value = 0.9; AC.master.connect(AC.comp); AC.comp.connect(c.destination);
+  const nb = c.createBuffer(1, sr * 2, sr), nd = nb.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  AC.noise = nb;
+  AC.jing = []; for (let k = 0; k < 10; k++) AC.jing.push(mkJingle(c));
+  AC.metal = mkMetal(c, 720, 0.9, 0.7);      // ガイドがポストを叩く「カン」
+  AC.metalHit = mkMetal(c, 610, 1.6, 1.0);   // ボールがポストに当たる「カーン」
+  SRC.ball = mkSrc(-0.9); SRC.postL = mkSrc(-0.5); SRC.postR = mkSrc(-0.5); SRC.goal = mkSrc(-0.6); SRC.cal = mkSrc(-0.9);
+  SRC.opp = [mkSrc(-0.5, 0.7), mkSrc(-0.5, 0.7)];   // 相手の声・足音は 0.7 m まで近づくほど大きく
+  SRC.gk = mkSrc(-0.2);                              // 自陣の GK（うしろの目印）
+  // 板の気配：板から 2 m 以内で、その側から小さな風（ノイズ＋ローパス）
+  SRC.wind = mkSrc(-0.6, 0.8);
+  { const wn = c.createBufferSource(), wf = c.createBiquadFilter(), wg = c.createGain();
+    wn.buffer = AC.noise; wn.loop = true; wf.type = 'lowpass'; wf.frequency.value = 650; wf.Q.value = 0.7; wg.gain.value = 0;
+    wn.connect(wf); wf.connect(wg); wg.connect(SRC.wind.in); wn.start(); AC.windG = wg; }
+  AC.stepPan = [-0.12, 0.12].map(p => { const sp = c.createStereoPanner(); sp.pan.value = p; sp.connect(AC.master); return sp; });
+  // 息（ダッシュで荒くなる）
+  const bn = c.createBufferSource(); bn.buffer = AC.noise; bn.loop = true;
+  const bf = c.createBiquadFilter(); bf.type = 'bandpass'; bf.frequency.value = 900; bf.Q.value = 0.7;
+  const bg = c.createGain(); bg.gain.value = 0; bn.connect(bf); bf.connect(bg); bg.connect(AC.master); bn.start();
+  AC.breathF = bf; AC.breathG = bg; AC.bNext = 0;
+  // 蹴る強さの音：Space を押している間、低い音が上がっていく（弓を引くように）
+  const co = c.createOscillator(), cf = c.createBiquadFilter(), cg = c.createGain();
+  co.type = 'sawtooth'; co.frequency.value = 110; cf.type = 'lowpass'; cf.frequency.value = 900; cf.Q.value = 4; cg.gain.value = 0;
+  co.connect(cf); cf.connect(cg); cg.connect(AC.master); co.start();
+  AC.chargeO = co; AC.chargeF = cf; AC.chargeG = cg;
+  voxLoad();
+}
+function normalize(d, peak) { let m = 0; for (let i = 0; i < d.length; i++) m = Math.max(m, Math.abs(d[i])); if (m > 0) for (let i = 0; i < d.length; i++) d[i] *= peak / m; }
+function mkJingle(c) {   // 小さな金属片がぶつかる音：高い倍音ばらばら＋短いノイズ
+  const sr = c.sampleRate, n = Math.floor(sr * 0.12), b = c.createBuffer(1, n, sr), d = b.getChannelData(0);
+  const parts = []; for (let i = 0; i < 5; i++) parts.push({ f: 2600 + Math.random() * 5400, a: 0.3 + Math.random() * 0.7, tau: 0.01 + Math.random() * 0.03, ph: Math.random() * 6.28 });
+  for (let i = 0; i < n; i++) {
+    const t = i / sr; let s = 0;
+    for (const p of parts) s += p.a * Math.sin(p.ph + 6.2832 * p.f * t) * Math.exp(-t / p.tau);
+    if (t < 0.004) s += (Math.random() * 2 - 1) * (1 - t / 0.004) * 0.9;
+    d[i] = s;
+  }
+  normalize(d, 0.8); return b;
+}
+function mkMetal(c, f0, len, bright) {   // 金属の管を叩いた音（棒の振動の比 1 : 2.76 : 5.40 : 8.93）
+  const sr = c.sampleRate, n = Math.floor(sr * len), b = c.createBuffer(1, n, sr), d = b.getChannelData(0);
+  const R = [1, 2.76, 5.40, 8.93], DEC = [0.5, 0.28, 0.15, 0.08], A = [1, 0.7 * bright, 0.4 * bright, 0.25 * bright];
+  for (let i = 0; i < n; i++) {
+    const t = i / sr; let s = 0;
+    for (let k = 0; k < 4; k++) s += A[k] * Math.sin(6.2832 * f0 * R[k] * t) * Math.exp(-t / (DEC[k] * len));
+    if (t < 0.003) s += (Math.random() * 2 - 1) * (1 - t / 0.003);
+    d[i] = s;
+  }
+  normalize(d, 0.85); return b;
+}
+function mkSrc(h, ref) {
+  const c = AC.ctx, g = c.createGain(), lp = c.createBiquadFilter(), p = c.createPanner();
+  lp.type = 'lowpass'; lp.frequency.value = 20000; lp.Q.value = 0.5;
+  p.panningModel = 'HRTF'; p.distanceModel = 'inverse'; p.refDistance = ref || REF; p.rolloffFactor = ROLL; p.maxDistance = 200;
+  g.connect(lp); lp.connect(p); p.connect(AC.master);
+  return { in: g, lp, p, h };
+}
+// f＝前へ何 m、r＝右へ何 m（頭から見て）。うしろの音は少しこもらせて前後を分けやすくする
+function setSrc(S, f, r, smooth, boost) {
+  const c = AC.ctx, t = c.currentTime, x = FLIP ? -r : r, y = S.h, z = -f;
+  if (S.p.positionX) {
+    if (smooth) { S.p.positionX.setTargetAtTime(x, t, 0.012); S.p.positionY.setTargetAtTime(y, t, 0.012); S.p.positionZ.setTargetAtTime(z, t, 0.012); }
+    else { S.p.positionX.setValueAtTime(x, t); S.p.positionY.setValueAtTime(y, t); S.p.positionZ.setValueAtTime(z, t); }
+  } else S.p.setPosition(x, y, z);
+  const deg = Math.abs(Math.atan2(r, f)) * 180 / Math.PI, k = clamp((180 - deg) / 90, 0, 1), dist = Math.hypot(f, r);
+  let cut = 3200 + 16800 * k * k; if (dist > 15) cut *= Math.max(0.45, 1 - (dist - 15) / 40);
+  if (boost) cut = clamp(cut * (boost === true ? 1.7 : boost), 300, 20000);
+  if (smooth) S.lp.frequency.setTargetAtTime(cut, t, 0.02); else S.lp.frequency.setValueAtTime(cut, t);
+}
+function rel(wx, wy) { const P = W.P, dx = wx - P.x, dy = wy - P.y, c = Math.cos(P.a), s = Math.sin(P.a); return { f: dx * c + dy * s, r: -dx * s + dy * c }; }
+function placeWorld(S, wx, wy, smooth, boost) { const q = rel(wx, wy); setSrc(S, q.f, q.r, smooth, boost); }
+function tmpSrc(wx, wy, h) { const S = mkSrc(h); placeWorld(S, wx, wy, false); setTimeout(() => { try { S.p.disconnect(); S.in.disconnect(); } catch (e) {} }, 3000); return S; }
+function tmpRel(f, r, h) { const S = mkSrc(h); setSrc(S, f, r, false); setTimeout(() => { try { S.p.disconnect(); S.in.disconnect(); } catch (e) {} }, 3000); return S; }
+
+function playBuf(buf, dest, when, gain, rate) {
+  const c = AC.ctx, s = c.createBufferSource(), g = c.createGain();
+  s.buffer = buf; s.playbackRate.value = rate || 1; g.gain.value = gain;
+  s.connect(g); g.connect(dest); s.start(when);
+  s.onended = () => { s.disconnect(); g.disconnect(); };
+}
+function noiseHit(dest, when, o) {
+  const c = AC.ctx, s = c.createBufferSource(), fl = c.createBiquadFilter(), g = c.createGain();
+  const att = o.att || 0.002, dec = o.dec || 0.1;
+  s.buffer = AC.noise; fl.type = o.type || 'bandpass'; fl.frequency.setValueAtTime(o.f || 1000, when);
+  if (o.f2) fl.frequency.exponentialRampToValueAtTime(o.f2, when + att + dec);
+  fl.Q.value = o.Q || 1;
+  g.gain.setValueAtTime(0.0001, when); g.gain.exponentialRampToValueAtTime(Math.max(0.0002, o.gain), when + att); g.gain.exponentialRampToValueAtTime(0.0001, when + att + dec);
+  s.connect(fl); fl.connect(g); g.connect(dest); s.start(when, Math.random() * 1.5); s.stop(when + att + dec + 0.05);
+  s.onended = () => { s.disconnect(); fl.disconnect(); g.disconnect(); };
+}
+function toneHit(dest, when, o) {
+  const c = AC.ctx, os = c.createOscillator(), g = c.createGain(), att = o.att || 0.003, dec = o.dec || 0.15;
+  os.type = o.type || 'sine'; os.frequency.setValueAtTime(o.f, when);
+  if (o.f2) os.frequency.exponentialRampToValueAtTime(o.f2, when + att + dec);
+  g.gain.setValueAtTime(0.0001, when); g.gain.exponentialRampToValueAtTime(Math.max(0.0002, o.gain), when + att); g.gain.exponentialRampToValueAtTime(0.0001, when + att + dec);
+  os.connect(g); g.connect(dest); os.start(when); os.stop(when + att + dec + 0.05);
+  os.onended = () => { os.disconnect(); g.disconnect(); };
+}
+const pick = a => a[(Math.random() * a.length) | 0];
+const now = () => AC.ctx.currentTime;
+
+const SND = {
+  jingle(v, dest) { playBuf(pick(AC.jing), dest || SRC.ball.in, now() + Math.random() * 0.012, 0.55 * (0.25 + 0.75 * Math.min(1, v / 6)), 0.9 + Math.random() * 0.25); },
+  burst(n, g, spread, dest) { const t = now(); for (let i = 0; i < n; i++) playBuf(pick(AC.jing), dest || SRC.ball.in, t + Math.random() * spread, g * (0.6 + 0.4 * Math.random()), 0.9 + Math.random() * 0.25); },
+  kick(p, chon) {
+    const t = now(), d = SRC.ball.in;
+    toneHit(d, t, { f: chon ? 170 : 140, f2: 45, gain: chon ? 0.35 : 0.55 + 0.45 * p, dec: chon ? 0.09 : 0.17 });
+    noiseHit(d, t, { type: 'lowpass', f: chon ? 900 : 1700, gain: chon ? 0.22 : 0.5, dec: 0.045 });
+    this.burst(chon ? 3 : 8, 0.6, chon ? 0.04 : 0.08);
+  },
+  touch() {
+    const t = now(), d = SRC.ball.in;
+    toneHit(d, t, { f: 210, f2: 90, gain: 0.16, dec: 0.05 });
+    noiseHit(d, t, { type: 'bandpass', f: 1200, Q: 0.8, gain: 0.1, dec: 0.03 });
+    this.burst(2, 0.45, 0.03);
+  },
+  roll() { this.burst(2, 0.28, 0.09); },
+  board(x, y, v) {     // 板「バン」
+    const S = tmpSrc(x, y, -0.8), t = now(), g = Math.min(1, 0.25 + v / 8);
+    toneHit(S.in, t, { f: 95, f2: 58, gain: 0.85 * g, dec: 0.22 });
+    noiseHit(S.in, t, { type: 'bandpass', f: 330, Q: 1.2, gain: 0.75 * g, dec: 0.12 });
+    noiseHit(S.in, t, { type: 'bandpass', f: 2300, Q: 2, gain: 0.12 * g, dec: 0.05 });
+    this.burst(3, 0.4 * g, 0.05);
+  },
+  wallP(x, y) {         // 自分が板やラインの端にさわった「トン」
+    const S = tmpSrc(x, y, -0.3), t = now();
+    toneHit(S.in, t, { f: 130, f2: 80, gain: 0.35, dec: 0.12 });
+    noiseHit(S.in, t, { type: 'bandpass', f: 520, Q: 1, gain: 0.25, dec: 0.06 });
+  },
+  post(side) { playBuf(AC.metal, side ? SRC.postR.in : SRC.postL.in, now(), 0.95, side ? 1.015 : 1); },
+  postHit(x, y, v) { const S = tmpSrc(x, y, -0.8), t = now(); playBuf(AC.metalHit, S.in, t, Math.min(1, 0.45 + v / 10)); toneHit(S.in, t, { f: 160, f2: 60, gain: 0.4, dec: 0.1 }); },
+  step(v, side, ex, lat) {  // 人工芝の足音。横歩きのときは 動いている方から聞こえる
+    const t = now(), d = AC.stepPan[side], g = 0.05 + 0.03 * v + 0.04 * ex;
+    d.pan.value = clamp((side ? 0.12 : -0.12) + 0.6 * (lat || 0) * (FLIP ? -1 : 1), -1, 1);
+    noiseHit(d, t, { type: 'bandpass', f: 1400 + 180 * v, Q: 0.9, gain: g, dec: 0.035 });
+    toneHit(d, t, { f: 75, f2: 50, gain: g * 0.8, dec: 0.05 });
+  },
+  // 「ボイ！」：のどの音（のこぎり波）を口の形（フォルマント）に通して「ボ」→「イ」へ。音声合成は遅れるので使わない
+  voy(dest, f0, gain) {
+    const c = AC.ctx, t = now(), src = c.createOscillator(), env = c.createGain(), out = c.createGain();
+    src.type = 'sawtooth';
+    src.frequency.setValueAtTime(f0 * 1.04, t); src.frequency.linearRampToValueAtTime(f0 * 1.16, t + 0.1); src.frequency.linearRampToValueAtTime(f0 * 0.88, t + 0.4);
+    env.gain.setValueAtTime(0.0001, t); env.gain.exponentialRampToValueAtTime(1, t + 0.035); env.gain.setValueAtTime(1, t + 0.27); env.gain.exponentialRampToValueAtTime(0.0001, t + 0.44);
+    src.connect(env); out.gain.value = gain; out.connect(dest);
+    const F = [[560, 300, 7, 2.6], [900, 2250, 9, 1.8], [2500, 3000, 10, 0.9]];   // 「オ」→「イ」
+    for (const [fo, fi, q, gk] of F) {
+      const bp = c.createBiquadFilter(), gg = c.createGain();
+      bp.type = 'bandpass'; bp.Q.value = q; bp.frequency.setValueAtTime(fo, t); bp.frequency.setValueAtTime(fo, t + 0.13); bp.frequency.linearRampToValueAtTime(fi, t + 0.27);
+      gg.gain.value = gk; env.connect(bp); bp.connect(gg); gg.connect(out);
+    }
+    noiseHit(out, t, { type: 'lowpass', f: 500, gain: 0.5, dec: 0.025 });          // 「b」の破裂
+    noiseHit(out, t + 0.02, { type: 'bandpass', f: 1800, Q: 0.6, gain: 0.06, att: 0.02, dec: 0.35 });   // 息
+    src.start(t); src.stop(t + 0.48);
+    src.onended = () => { src.disconnect(); env.disconnect(); setTimeout(() => out.disconnect(), 200); };
+  },
+  ostep(dest, v) {       // 相手の足音（方向と距離つき）
+    const t = now(), g = 0.08 + 0.04 * v;
+    noiseHit(dest, t, { type: 'bandpass', f: 1300 + 150 * v, Q: 0.9, gain: g, dec: 0.035 });
+    toneHit(dest, t, { f: 70, f2: 48, gain: g * 0.9, dec: 0.05 });
+  },
+  clash(x, y, big) {     // 足と足がボールの上でぶつかる「ガッ」
+    const S = tmpSrc(x, y, -0.9), t = now();
+    toneHit(S.in, t, { f: 180, f2: 70, gain: big ? 0.5 : 0.3, dec: 0.09 });
+    noiseHit(S.in, t, { type: 'bandpass', f: 900, Q: 1, gain: big ? 0.45 : 0.25, dec: 0.06 });
+    this.burst(big ? 5 : 3, 0.55, 0.06);
+  },
+  body(x, y) {           // 体どうしが当たる「ドッ」
+    const S = tmpSrc(x, y, -0.3), t = now();
+    toneHit(S.in, t, { f: 110, f2: 60, gain: 0.45, dec: 0.12 });
+    noiseHit(S.in, t, { type: 'lowpass', f: 700, gain: 0.3, dec: 0.08 });
+  },
+  // 取られた：ぶつかる音＋下がる2音／はじかれた：軽い「コッ」と鈴が散る／空振り：こすれる音／取った：ぶつかる音＋上がる2音
+  lostBall(x, y) { this.clash(x, y, true); const t = now() + 0.08; toneHit(AC.master, t, { f: 620, gain: 0.07, dec: 0.12 }); toneHit(AC.master, t + 0.13, { f: 330, gain: 0.07, dec: 0.2 }); },
+  gotBall(x, y) { this.clash(x, y, false); const t = now() + 0.08; toneHit(AC.master, t, { f: 440, gain: 0.07, dec: 0.1 }); toneHit(AC.master, t + 0.11, { f: 880, gain: 0.07, dec: 0.18 }); },
+  poke(x, y) { const S = tmpSrc(x, y, -0.9), t = now(); toneHit(S.in, t, { f: 900, f2: 500, gain: 0.25, dec: 0.04 }); this.burst(6, 0.5, 0.15); },
+  scuff(x, y) { const S = tmpSrc(x, y, -0.9); noiseHit(S.in, now(), { type: 'bandpass', f: 2500, Q: 0.8, gain: 0.15, att: 0.01, dec: 0.08 }); },
+  // 30° ごとの「カチ」。音の高さ＝ゴール（12 時）に近いほど高く、6 時で一番低い（回しながら、どのくらいずれているか分かる）
+  tick() {
+    const t = now(), P = W.P, k = 1 - Math.abs(angDiff(Math.atan2(GY - P.y, PL - P.x), P.a)) / Math.PI, f = 520 * Math.pow(4, k);
+    noiseHit(AC.master, t, { type: 'bandpass', f: f * 2, Q: 3, gain: 0.08, att: 0.001, dec: 0.012 }); toneHit(AC.master, t, { f, gain: 0.06, dec: 0.05 });
+  },
+  // PK の GK：手を叩いて「こい！」（オ→イ）
+  gkCall(x, y) {
+    const S = tmpSrc(x, y, -0.2), d = S.in, t = now();
+    for (const dt of [0, 0.15]) noiseHit(d, t + dt, { type: 'bandpass', f: 1400, Q: 1.2, gain: 0.7, att: 0.001, dec: 0.03 });
+    const c = AC.ctx, src = c.createOscillator(), env = c.createGain(), out = c.createGain(), t2 = t + 0.36;
+    src.type = 'sawtooth'; src.frequency.setValueAtTime(140, t2); src.frequency.linearRampToValueAtTime(165, t2 + 0.1); src.frequency.linearRampToValueAtTime(120, t2 + 0.32);
+    env.gain.setValueAtTime(0.0001, t2); env.gain.exponentialRampToValueAtTime(1, t2 + 0.02); env.gain.setValueAtTime(1, t2 + 0.2); env.gain.exponentialRampToValueAtTime(0.0001, t2 + 0.34);
+    src.connect(env); out.gain.value = 0.9; out.connect(d);
+    for (const [fo, fi, q, gk] of [[500, 300, 7, 2.4], [850, 2250, 9, 1.7], [2500, 3000, 10, 0.8]]) {
+      const bp = c.createBiquadFilter(), gg = c.createGain(); bp.type = 'bandpass'; bp.Q.value = q;
+      bp.frequency.setValueAtTime(fo, t2); bp.frequency.setValueAtTime(fo, t2 + 0.1); bp.frequency.linearRampToValueAtTime(fi, t2 + 0.22);
+      gg.gain.value = gk; env.connect(bp); bp.connect(gg); gg.connect(out);
+    }
+    noiseHit(out, t2, { type: 'bandpass', f: 2200, Q: 2, gain: 0.35, dec: 0.02 });   // 「k」
+    src.start(t2); src.stop(t2 + 0.38); src.onended = () => { src.disconnect(); env.disconnect(); setTimeout(() => out.disconnect(), 200); };
+  },
+  aimClick(x, y, dev) {   // GK に聞こえる、蹴る人のねらいの「カチ」：ねらった側から・真ん中から離れるほど低い
+    const S = tmpSrc(x, y, -0.4), t = now(), f = 2080 * (1 - 0.7 * clamp(dev, 0, 1));
+    noiseHit(S.in, t, { type: 'bandpass', f: f * 2, Q: 3, gain: 0.25, att: 0.001, dec: 0.012 }); toneHit(S.in, t, { f, gain: 0.18, dec: 0.05 });
+  },
+  dive(x, y) { const S = tmpSrc(x, y, -0.6), t = now(); noiseHit(S.in, t, { type: 'bandpass', f: 700, f2: 2400, Q: 1, gain: 0.3, att: 0.03, dec: 0.18 }); toneHit(S.in, t + 0.25, { f: 90, f2: 55, gain: 0.5, dec: 0.15 }); },
+  // 自陣の GK：手を 2 回叩いて「ヘイ！」（うしろの目印・方向つき）
+  gk() {
+    const d = SRC.gk.in, t = now();
+    for (const dt of [0, 0.16]) noiseHit(d, t + dt, { type: 'bandpass', f: 1400, Q: 1.2, gain: 0.7, att: 0.001, dec: 0.03 });
+    const c = AC.ctx, src = c.createOscillator(), env = c.createGain(), out = c.createGain(), t2 = t + 0.38;
+    src.type = 'sawtooth'; src.frequency.setValueAtTime(125, t2); src.frequency.linearRampToValueAtTime(145, t2 + 0.1); src.frequency.linearRampToValueAtTime(110, t2 + 0.32);
+    env.gain.setValueAtTime(0.0001, t2); env.gain.exponentialRampToValueAtTime(1, t2 + 0.03); env.gain.setValueAtTime(1, t2 + 0.2); env.gain.exponentialRampToValueAtTime(0.0001, t2 + 0.34);
+    src.connect(env); out.gain.value = 0.9; out.connect(d);
+    for (const [fo, fi, q, gk] of [[530, 300, 7, 2.4], [1850, 2300, 9, 1.6], [2500, 3000, 10, 0.8]]) {   // 「エ」→「イ」
+      const bp = c.createBiquadFilter(), gg = c.createGain(); bp.type = 'bandpass'; bp.Q.value = q;
+      bp.frequency.setValueAtTime(fo, t2); bp.frequency.setValueAtTime(fo, t2 + 0.1); bp.frequency.linearRampToValueAtTime(fi, t2 + 0.22);
+      gg.gain.value = gk; env.connect(bp); bp.connect(gg); gg.connect(out);
+    }
+    noiseHit(out, t2, { type: 'highpass', f: 2500, gain: 0.25, dec: 0.05 });   // 「h」
+    src.start(t2); src.stop(t2 + 0.38); src.onended = () => { src.disconnect(); env.disconnect(); setTimeout(() => out.disconnect(), 200); };
+  },
+  lockBall() { toneHit(AC.master, now(), { f: 1760, gain: 0.07, dec: 0.08 }); },                                            // ボールの方を向いた「ピッ」
+  lockGoal() { const t = now(); toneHit(AC.master, t, { f: 523, gain: 0.1, dec: 0.2 }); toneHit(AC.master, t, { f: 784, gain: 0.03, dec: 0.12 }); },   // ゴールの方「ポン」
+  chirp() { this.burst(1, 0.32, 0.01); },
+  voyEnd() { toneHit(AC.master, now(), { f: 300, f2: 220, gain: 0.05, dec: 0.12 }); },   // 叫びが切れた（小さく）
+  oppNet(y) {            // こちらのゴールのネット
+    const S = tmpSrc(-0.4, y, -0.6), t = now();
+    noiseHit(S.in, t, { type: 'highpass', f: 2400, gain: 0.5, att: 0.012, dec: 0.4 });
+    noiseHit(S.in, t + 0.02, { type: 'bandpass', f: 700, Q: 0.7, gain: 0.4, att: 0.01, dec: 0.3 });
+  },
+  whiff() { noiseHit(AC.master, now(), { type: 'bandpass', f: 500, f2: 2200, Q: 1.5, gain: 0.16, att: 0.03, dec: 0.15 }); },
+  blip() { toneHit(AC.master, now(), { f: 440, gain: 0.07, dec: 0.08 }); },
+  whistle(len) {        // 審判の笛（玉の入った笛のふるえ）
+    const c = AC.ctx, t = now(), o = c.createOscillator(), lfo = c.createOscillator(), lg = c.createGain(), g = c.createGain();
+    o.frequency.value = 2950; lfo.frequency.value = 28; lg.gain.value = 130; lfo.connect(lg); lg.connect(o.frequency);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.16, t + 0.02); g.gain.setValueAtTime(0.16, t + len); g.gain.exponentialRampToValueAtTime(0.0001, t + len + 0.06);
+    o.connect(g); g.connect(AC.master); o.start(t); lfo.start(t); o.stop(t + len + 0.1); lfo.stop(t + len + 0.1);
+    noiseHit(AC.master, t, { type: 'highpass', f: 3000, gain: 0.03, att: 0.02, dec: len });
+  },
+  net() {               // ネット「バサッ」
+    const t = now(), d = SRC.goal.in;
+    noiseHit(d, t, { type: 'highpass', f: 2400, gain: 0.6, att: 0.012, dec: 0.4 });
+    noiseHit(d, t + 0.02, { type: 'bandpass', f: 700, Q: 0.7, gain: 0.5, att: 0.01, dec: 0.3 });
+  },
+  cheer() {             // 歓声：まわり全部から
+    const c = AC.ctx, t = now() + 0.15, out = c.createGain(), m = c.createChannelMerger(2);
+    out.gain.setValueAtTime(0.0001, t); out.gain.exponentialRampToValueAtTime(0.32, t + 0.4); out.gain.setValueAtTime(0.32, t + 1.8); out.gain.exponentialRampToValueAtTime(0.0001, t + 4);
+    m.connect(out); out.connect(AC.master);
+    for (let ch = 0; ch < 2; ch++) { const s = c.createBufferSource(), f = c.createBiquadFilter(); s.buffer = AC.noise; s.loop = true; f.type = 'bandpass'; f.frequency.value = 950; f.Q.value = 0.5; s.connect(f); f.connect(m, 0, ch); s.start(t, ch * 0.7); s.stop(t + 4.2); }
+    for (let i = 0; i < 12; i++) {
+      const o = c.createOscillator(), fl = c.createBiquadFilter(), g = c.createGain(), pn = c.createStereoPanner(), f0 = 170 + Math.random() * 190;
+      o.type = 'sawtooth'; o.frequency.setValueAtTime(f0 * 0.9, t); o.frequency.linearRampToValueAtTime(f0 * 1.18, t + 0.6 + Math.random() * 0.5); o.frequency.linearRampToValueAtTime(f0, t + 3.6);
+      fl.type = 'bandpass'; fl.frequency.value = 650 + Math.random() * 450; fl.Q.value = 3; g.gain.value = 0.022; pn.pan.value = Math.random() * 2 - 1;
+      o.connect(fl); fl.connect(g); g.connect(pn); pn.connect(out); o.start(t + Math.random() * 0.25); o.stop(t + 4.2);
+    }
+    const pans = [-0.8, -0.3, 0.3, 0.8].map(p => { const sp = c.createStereoPanner(); sp.pan.value = p; sp.connect(out); return sp; });
+    for (let i = 0; i < 45; i++) noiseHit(pick(pans), t + 0.4 + Math.random() * 3, { type: 'bandpass', f: 1500 + Math.random() * 800, Q: 1.5, gain: 0.5, dec: 0.02 });
+  },
+};
+
+/* ---- 言葉（speechSynthesis・ブラウザの言語で） ---- */
+let voiceCache = null;
+function pickVoice() {
+  if (!window.speechSynthesis) return null;
+  const vs = speechSynthesis.getVoices(); if (!vs.length) return null;
+  const want = LANG === 'ja' ? 'ja' : 'en';
+  const mine = vs.filter(v => v.lang.toLowerCase().startsWith(want));
+  // 女の人・女の子の声を先に（日本語：Nanami〔Edge〕→ Google 日本語 → Haruka → Ayumi → Sayaka → Kyoko〔Mac〕→ O-ren）。男の声（Ichiro・Keita・Otoya）は最後
+  // 英語：Edge の自然な声（Natural）→ Aria・Jenny・Ava・Emma → Google US → Samantha〔Apple〕→ Zira
+  const pref = want === 'ja' ? [/nanami/i, /google/i, /haruka/i, /ayumi/i, /sayaka/i, /kyoko/i, /o-ren/i] : [/en-us.*natural|natural.*united states/i, /natural/i, /aria|jenny|ava|emma|michelle/i, /google us/i, /samantha|karen|moira/i, /zira/i];
+  for (const re of pref) { const v = mine.find(v => re.test(v.name)); if (v) return v; }
+  return mine.find(v => !/ichiro|keita|otoya|hattori|david|mark|guy/i.test(v.name)) || mine[0] || null;
+}
+/* ---- 声：VOICEVOX:冥鳴ひまり の録音を「部品」で並べて話す（voice/himari.json）。無いとき・英語・部品が足りない言葉は、ブラウザの読み上げの声 ----
+   部品の作り方：コンソールで voxWanted() → voice/keys.json → py -B voice/make_voice.py（VOICEVOX のエンジンを起動しておく） */
+const VOX_VER = '202611180154-1275';   // 声のファイルの版（make_voice.py が録るたびに書きかえる＝ブラウザが古い声を覚えていても読み直す）
+const VOX = { on: false, clips: null, max: 1, bins: null, bufs: [], dec: [], use: [], srcs: [], until: 0, g: null, miss: {}, off: null, state: 'off', pend: [], waitT: null, gen: 0, pendN: 0, q: Promise.resolve() };
+const voxNorm = s => s.replace(/<[^>]+>/g, '').replace(/[\s「」]/g, '');
+const VOX_PAUSE = { '、': 0.16, '。': 0.12, '！': 0.14, '？': 0.14, '…': 0.2, '：': 0.1, '・': 0.08, '（': 0, '）': 0.08 };
+// 部品の読み（英字とキーは日本語の読みに）
+const VOX_READ = { Space: 'スペース', Shift: 'シフト', Esc: 'エスケープ', GK: 'ジーケー', W: 'ダブリュー', S: 'エス', A: 'エー', D: 'ディー', E: 'イー',
+  Q: 'キュー', K: 'ケー', T: 'ティー', M: 'エム', L: 'エル', R: 'アール', V: 'ブイ', H: 'エイチ', N: 'エヌ' };
+function voxSpoken(k) {
+  if (k === '→を') return 'みぎを'; if (k === '←を') return 'ひだりを'; if (k === '中') return 'チュウ';
+  return k.replace(/[A-Za-z]+/g, m => VOX_READ[m] || m);
+}
+// しゃべる言葉の部品の一覧（T の言葉から作る＝言葉を直したら作り直す）
+function voxWanted() {
+  if (LANG !== 'ja') return [];
+  const keys = new Set(), sent = s => voxNorm(s).split(/(?<=[。！？])/).forEach(x => { if (x) keys.add(x); });
+  [T.help, T.pausedSay, T.voiceOn, T.go, T.goSee, T.next, T.tutFirst, T.tutAligned, T.tutBack, T.tutRetry, T.tutDone, T.nextKeys, T.newRec, T.darker,
+    T.missR, T.missL, T.post, T.left30, T.out, T.lrIntro, T.lrOK, T.lrFlip, T.lrRetry, T.calIntro, T.earIntro, ...T.ear, T.earHit, T.earBetter, T.earAgain, T.dailyGo, T.dailyDone, T.endKeys, T.matchGo, ...Object.values(T.mt), T.left60, T.full, T.copied, T.touchSay, T.thumbSay, T.gyroSayOn, T.gyroSayNo, T.gyroOnSay, T.gyroOffSay, T.foulHead('expired'), T.foulHead('silent'),
+    ...Object.values(T.rt), ...Object.values(T.head), ...T.tut.slice(1), T.stars(0), T.stars(1), T.stars(2), T.stars(3),
+    T.pk.youKickLong, T.pk.youKick, T.pk.youKeepLong, T.pk.youKeep, T.pk.again, T.pk.help, T.tutClock(T.tutBall, 12), T.tutClock(T.tutGoal, 12)].forEach(sent);
+  const K = T.pk; [K.R, K.L, K.C, K.stay, '対', '目', 'に蹴った。', 'GKは', 'に来た。', 'あなたは', 'で、勝ち！', 'で、負け。', 'で、引き分け。', 'PK', '連勝！',
+    ...Object.values(K.res).flat(), '合言葉は', '終わり。', 'ズレは平均', '15度以内は', '正解。', '左右テスト', '鈴は平均', 'ゴールは平均', '板は平均', '板まで', 'ぶつかったのは', '走って', '鈴を', '鳴らし', 'ボイを', '聞いた。', '目を閉じて'].forEach(k => keys.add(voxNorm(k)));
+  const NT = T.net; [NT.ok, NT.okWait, NT.noOne, NT.lost, NT.notFound, NT.need4, NT.noLib, NT.full, NT.noPause, NT.typeCode].forEach(sent);
+  for (let n = 0; n <= 180; n++) keys.add(n + '度');
+  for (let n = 0; n <= 700; n += 10) keys.add(n + 'センチ');
+  const C = T.coach, P = T.pos;
+  ['ボール', 'ゴール', '相手のボール', '持ってる。', 'まっすぐ', 'ほぼ', '長押しで少し右', '長押しで少し左', 'ボールは', 'ゴールは', '→を', '←を', '押して',
+    '板は', '打て！', '取られ', 'タッチ', '中', '連続！', '相手の強さ', 'レベル', '真っ暗', '60秒以内は', C.there, C.callVoy, C.shootNow, T.taken, T.got, T.ballLeft,
+    P.own, P.mid, P.att, P.left, P.center, P.right, T.straight, T.slR, T.slL, T.right, T.left, T.backR, T.backL].forEach(k => keys.add(voxNorm(k)));
+  for (let n = 0; n <= 12; n++) keys.add(String(n));
+  for (let n = 1; n <= 12; n++) keys.add(n + '時');
+  for (let n = 1; n <= 150; n++) keys.add(n + 'メートル');
+  for (let n = 2; n <= 60; n++) keys.add(n + '日連続');
+  for (let n = 0; n <= 90; n++) keys.add(n + '秒');
+  for (let n = 0; n <= 99; n++) { keys.add(n + '回'); keys.add(n + '本'); }
+  // よく言う形は 1 息で（別々につなぐと 1 語ごとに文が終わったように聞こえる）
+  for (let n = 1; n <= 12; n++) ['ボール、', 'ゴール、', '相手のボール、', 'ボールは', 'ゴールは', '板は'].forEach(p => keys.add(p + n + '時'));
+  for (let a = 0; a <= 9; a++) for (let b = 0; b <= 9; b++) keys.add(a + '対' + b);
+  for (let n = 1; n <= 8; n++) keys.add('相手の強さ' + n);
+  for (let n = 1; n <= 5; n++) { keys.add('レベル' + n); keys.add(n + '本目'); }
+  for (let n = 2; n <= 30; n++) keys.add(n + '本連続！');
+  for (let n = 2; n <= 20; n++) keys.add('PK' + n + '連勝！');
+  return [...keys].map(k => ({ k, s: voxSpoken(k) }));
+}
+// 声は 45 秒ぐらいの「かたまり」（mp3）に分けてある。使うかたまりだけ展開し、しばらく使わないものは捨てる
+// （全部を一度に展開すると 24 kHz でも約 150 MB＝スマホで落ちる。かたまり 1 つは 24 kHz で約 4 MB・スマホは 16 kHz で約 3 MB）
+const VSR = IS_TOUCH ? 16000 : 24000, VOX_KEEP = IS_TOUCH ? 6 : 12;
+function voxChunk(i) {
+  VOX.use[i] = performance.now();
+  if (!VOX.dec[i]) VOX.dec[i] = (async () => {
+    const OC = window.OfflineAudioContext || window.webkitOfflineAudioContext, bin = VOX.bins[i].buffer.slice(0);   // 写しを渡す（展開すると元が空になるので）
+    const b = OC ? await new OC(1, VSR, VSR).decodeAudioData(bin) : await AC.ctx.decodeAudioData(bin);
+    VOX.bufs[i] = b;
+    if (VOX.off == null) {   // mp3 にすると音が少しうしろへずれる（エンコーダーの遅れ）。声が立ち上がる場所を測って、ずれを直す
+      const d = b.getChannelData(0), sr = b.sampleRate, offs = [];
+      for (const [c, st] of Object.values(VOX.clips)) { if (c !== i) continue; let n = Math.floor(st * sr); const end = n + sr * 0.3; while (n < end && Math.abs(d[n]) < 0.02) n++; offs.push(n / sr - st); if (offs.length >= 40) break; }
+      offs.sort((x, y) => x - y); VOX.off = offs.length ? clamp(offs[offs.length >> 1] - 0.015, 0, 0.12) : 0;
+    }
+    const live = VOX.bufs.map((x, n) => x ? n : -1).filter(n => n >= 0);   // 多すぎたら、いちばん前に使ったものから捨てる
+    if (live.length > VOX_KEEP) { live.sort((x, y) => VOX.use[x] - VOX.use[y]); for (const n of live.slice(0, live.length - VOX_KEEP)) { if (n !== i) { VOX.bufs[n] = null; VOX.dec[n] = null; } } }
+    return b;
+  })().catch(e => { VOX.dec[i] = null; throw e; });
+  return VOX.dec[i];
+}
+async function voxLoad() {   // audioInit から：音の箱ができたら使えるようにする（取ってくる・base64 をほどくのは 最初の画面で済ませてある）
+  if (VOX.state !== 'loading' || VOX.decoding || !AC.ctx) return;
+  VOX.decoding = true;
+  try {
+    await VOX_PRE; if (!VOX.bins) throw new Error('no voice');
+    VOX.max = Math.max(...Object.keys(VOX.clips).map(k => k.length));
+    VOX.g = AC.ctx.createGain(); VOX.g.gain.value = 1.0; VOX.g.connect(AC.ctx.destination);   // 声はコンプレッサーを通さない（歓声や鈴といっしょに下げられない）
+    await voxChunk(0);
+    VOX.on = true; VOX.state = 'ready'; console.log('voice: VOICEVOX:冥鳴ひまり', Object.keys(VOX.clips).length, 'clips,', VOX.bins.length, 'chunks,', VSR, 'Hz');
+  } catch (e) { VOX.on = false; VOX.state = 'fail'; console.log('voice: browser speech (no voice/himari.json)'); }
+  voxFlush();
+}
+// 最初の画面を開いた時点で himari.json を取りに行き、base64 をほどいておく（キーを押す前に）
+VOX.state = LANG === 'ja' && !Q.has('novox') ? 'loading' : 'off';
+const VOX_PRE = VOX.state === 'loading'
+  ? fetch('voice/himari.json?v=' + VOX_VER).then(r => r.json()).then(j => { VOX.bins = j.chunks.map(b => Uint8Array.from(atob(b), c => c.charCodeAt(0))); VOX.clips = j.clips; })
+    .catch(() => { VOX.state = 'fail'; console.log('voice: browser speech (no voice/himari.json)'); voxFlush(); })
+  : null;
+function voxFlush() {   // 待たせていた言葉を話す（ひまりが使えれば ひまりで）
+  clearTimeout(VOX.waitT); VOX.waitT = null;
+  const list = VOX.pend; VOX.pend = [];
+  list.forEach((t, i) => speakNow(t, i > 0));
+}
+function voxTokens(text) {   // 文字列を、いちばん長く合う部品から順に切る。句読点は間。合わない字があれば null
+  const s = voxNorm(text), out = []; let i = 0;
+  while (i < s.length) {
+    let hit = null;
+    for (let L = Math.min(VOX.max, s.length - i); L > 0; L--) { const k = s.substr(i, L); if (VOX.clips[k]) { hit = k; break; } }
+    if (hit) { out.push(hit); i += hit.length; continue; }
+    if (VOX_PAUSE[s[i]] != null) { out.push(VOX_PAUSE[s[i]]); i++; continue; }
+    VOX.miss[text] = (VOX.miss[text] || 0) + 1; return null;
+  }
+  return out;
+}
+const MASTER_G = 0.9;
+function voxStop() {
+  VOX.gen++;
+  for (const s of VOX.srcs) { try { s.stop(); } catch (e) {} } VOX.srcs = []; VOX.until = 0;
+  if (AC.master) { const t = AC.ctx.currentTime; AC.master.gain.cancelScheduledValues(t); AC.master.gain.setTargetAtTime(MASTER_G, t, 0.1); }
+}
+function voxSpeak(toks, keep) {
+  const c = AC.ctx; if (!keep) voxStop();
+  const t0 = Math.max(c.currentTime + 0.02, keep ? VOX.until : 0); let t = t0;
+  for (const k of toks) {
+    if (typeof k === 'number') { t += k; continue; }
+    const [ci, st, du] = VOX.clips[k], src = c.createBufferSource();
+    src.buffer = VOX.bufs[ci]; src.connect(VOX.g); src.start(t, st + (VOX.off || 0), du); t += du + 0.05;   // 部品と部品の間は 0.05 秒
+    VOX.srcs.push(src); src.onended = () => { const i = VOX.srcs.indexOf(src); if (i >= 0) VOX.srcs.splice(i, 1); };
+  }
+  VOX.until = t;
+  // 声が出ている間は 効果音を 30% 下げる（ダッキング）
+  const m = AC.master.gain; m.cancelScheduledValues(c.currentTime);
+  m.setTargetAtTime(MASTER_G * 0.7, Math.max(c.currentTime, t0 - 0.05), 0.04); m.setTargetAtTime(MASTER_G, t, 0.2);
+}
+// 話す：要るかたまりが展開済みならすぐ、まだなら展開してから（順番は守る。あとから来た「言い直し」は前の待ちを捨てる）
+function voxSay(toks, keep) {
+  if (!keep) { VOX.gen++; voxStop(); }
+  const gen = VOX.gen, need = [...new Set(toks.filter(k => typeof k !== 'number').map(k => VOX.clips[k][0]))];
+  need.forEach(c => { VOX.use[c] = performance.now(); });
+  if (!VOX.pendN && need.every(c => VOX.bufs[c])) { voxSpeak(toks, true); return; }
+  VOX.pendN++;
+  VOX.q = VOX.q.then(() => Promise.all(need.map(voxChunk))).then(() => { if (gen === VOX.gen) voxSpeak(toks, true); }).catch(() => {}).then(() => { VOX.pendN--; });
+}
+const voxReady = () => VOX.on && AC.ctx && AC.ctx.state === 'running';
+function isSpeaking() { return (voxReady() && (VOX.pendN > 0 || AC.ctx.currentTime < VOX.until)) || !!(window.speechSynthesis && speechSynthesis.speaking); }
+function stopSpeech() { voxStop(); if (window.speechSynthesis) speechSynthesis.cancel(); }
+function say(text, keep) {
+  live(text);
+  if (SILENT || !VOICE) return;
+  if (VOX.state === 'loading') {   // ひまりが使えるまで 最大 1.5 秒は声を待たせる（その間は効果音だけ）
+    if (!keep) VOX.pend = [];
+    VOX.pend.push(text);
+    if (!VOX.waitT) VOX.waitT = setTimeout(() => { VOX.waitT = null; if (VOX.state === 'loading') { const l = VOX.pend; VOX.pend = []; l.forEach((t, i) => speakNow(t, i > 0, true)); } }, 1500);
+    return;
+  }
+  speakNow(text, keep);
+}
+function speakNow(text, keep, late) {
+  if (VOX.state === 'ready') {   // 日本語で ひまりが読めたあとは、ブラウザの声を二度と使わない
+    if (AC.ctx.state !== 'running') AC.ctx.resume();
+    if (window.speechSynthesis && !keep) speechSynthesis.cancel();
+    const toks = voxTokens(text);
+    if (toks) voxSay(toks, keep); else console.warn('voice: 部品が無い言葉（黙ります）:', text);
+    return;
+  }
+  // ブラウザの声（英語・ひまりが読めなかった・待ちすぎ）
+  if (!window.speechSynthesis) return;
+  if (!keep) { speechSynthesis.cancel(); voxStop(); }
+  const u = new SpeechSynthesisUtterance(text); u.lang = LANG === 'ja' ? 'ja-JP' : 'en-US'; u.rate = 1.05; u.pitch = 1.0;
+  voiceCache = voiceCache || pickVoice(); if (voiceCache) u.voice = voiceCache;
+  speechSynthesis.speak(u);
+}
+function live(text) { const el = document.getElementById('live'); el.textContent = ''; setTimeout(() => el.textContent = text, 30); }
+let SILENT = false;
+
+/* ====================== 波紋（補助輪） ====================== */
+const RIP = [], RIPCOL = { gk: '110,200,230', voy: '235,80,80', bell: '255,255,255', board: '150,156,165', post: '232,196,90', goal: '232,196,90', self: '120,140,170' };
+const ripLast = {};
+function rip(x, y, kind, big) {
+  const t = performance.now() / 1000;
+  if (kind === 'bell' && t - (ripLast.bell || 0) < 0.22) return;
+  ripLast[kind] = t; RIP.push({ x, y, kind, t0: t, big: big || 1 });
+  if (RIP.length > 80) RIP.shift();
+}
+
+/* ====================== 事件 → 音と波紋 ====================== */
+const tally = () => { const r = W.results.filter(x => x.type !== 'tut'); return { k: r.filter(x => x.ok && x.time <= 60).length, m: r.length }; };
+// 1 本の終わり：声と画面で結果（星・連続・相手の強さ）。人が遊ぶときは Space で次・R でもう一度
+let BEST_STREAK = 0; try { BEST_STREAK = +(localStorage.getItem('voy_streak') || 0); } catch (e) {}
+let sayTimer = 0;
+const LVRUN = { lv: 0, n: 0 };   // 同じ暗さで続けてゴールした数
+function resultSay(head) {
+  const r = W.results[W.results.length - 1]; if (!r) return;
+  clearTimeout(sayTimer);
+  if (W.mode === 'match') { matchSay(head); return; }
+  if (W.mode === 'daily') { dailyEnd(head, r); return; }
+  if (r.type === 'tut') {
+    if (r.ok) { setMsg('★ ' + T.tutDone); sayTimer = setTimeout(() => say(T.tutDone), 600); try { localStorage.setItem('voy_tut', '1'); } catch (e) {} }
+    else { setMsg(T.tutRetry); sayTimer = setTimeout(() => say(T.tutRetry), 600); }
+    return;
+  }
+  const tl = tally();
+  const rec = !BOT && r.streak >= 2 && r.streak > BEST_STREAK;
+  if (rec) { BEST_STREAK = r.streak; try { localStorage.setItem('voy_streak', String(r.streak)); } catch (e) {} }
+  // 先に短く（結果・星・新記録・次のキー）、くわしい数字はそのあと（途中で Space を押されてもよい）
+  if (r.ok && LVRUN.lv === LV) LVRUN.n++; else if (r.ok) { LVRUN.lv = LV; LVRUN.n = 1; } else LVRUN.n = 0;
+  const darker = !W.auto && LV < 5 && LVRUN.n >= 3 && LVRUN.n % 3 === 0;
+  const short = head + ' ' + T.stars(r.stars) + (rec ? ' ' + T.newRec : '') + (darker ? ' ' + T.darker : '') + (W.auto ? '' : ' ' + T.nextKeys);
+  const detail = T.body(Math.round(r.time), r.touches, r.stolen) + (r.streak >= 2 ? ' ' + T.streak(r.streak) : '') +
+    (r.type !== 'solo' ? ' ' + T.oppLv(r.oppLv) : '') + ' ' + T.tallyTxt(tl.k, tl.m);
+  setMsg((r.stars ? '★'.repeat(r.stars) + '☆'.repeat(3 - r.stars) : '☆☆☆') + '\n' + short + '\n' + detail);
+  // 0.6 秒待ってから（直前の「ポスト！」などを消さない）
+  sayTimer = setTimeout(() => { say(short); say(detail, true); }, 600);
+}
+const VIB = { kick: 25, wallP: 50, postHit: 40, goal: [80, 60, 200], oppgoal: 200, foul: 150, steal: 60, full: [200, 100, 200] };   // スマホのふるえ（多すぎるとうるさいので 大事な出来事だけ）
+function handleEv(e) {
+  if (W.type === 'pk' && e.k.startsWith('pk') && pkEv(e)) return;
+  const A = !!AC.ctx && !SILENT;
+  if (IS_TOUCH && !SILENT && VIB[e.k] && navigator.vibrate) { try { navigator.vibrate(VIB[e.k]); } catch (_) {} }
+  switch (e.k) {
+    case 'jingle': if (A) SND.jingle(e.v); rip(e.x, e.y, 'bell'); break;
+    case 'touch': if (A) SND.touch(); rip(e.x, e.y, 'bell'); break;
+    case 'roll': if (A) SND.roll(); rip(e.x, e.y, 'bell'); break;
+    case 'bump': if (A) SND.burst(2, 0.4, 0.03); break;
+    case 'kick': if (A) SND.kick(e.p, e.chon); rip(e.x, e.y, 'bell', e.chon ? 1.2 : 2); break;
+    case 'whiff': if (A) SND.whiff(); break;
+    case 'board': if (A) SND.board(e.x, e.y, e.v); rip(e.x, e.y, 'board', 1.5); break;
+    case 'wallP': if (A) SND.wallP(e.x, e.y); rip(e.x, e.y, 'board'); break;
+    case 'post': if (A) SND.post(e.side); rip(e.x, e.y, 'post'); break;
+    case 'postHit': if (A) SND.postHit(e.x, e.y, e.v); rip(e.x, e.y, 'post', 2); if (e.att) say(T.post); break;
+    case 'step': if (A) SND.step(e.v, e.side, e.ex, e.lat); break;
+    case 'nudge': break;
+    case 'pvoy': if (A) SND.voy(AC.master, 150, 0.32); rip(e.x, e.y, 'voy'); break;
+    case 'voy': if (A) SND.voy(SRC.opp[e.i].in, e.i ? 128 : 172, 1.1); rip(e.x, e.y, 'voy', 1.3); break;
+    case 'ostep': if (A) SND.ostep(SRC.opp[e.i].in, e.v); break;
+    case 'otouch': if (A) SND.touch(); rip(e.x, e.y, 'bell'); break;
+    case 'okick': if (A) SND.kick(0.4, false); rip(e.x, e.y, 'bell', 2); break;
+    case 'tackle':
+      if (e.res === 'steal') { if (A) SND.lostBall(e.x, e.y); say(T.taken); }
+      else if (e.res === 'poke') { if (A) SND.poke(e.x, e.y); }
+      else if (A) SND.scuff(e.x, e.y);
+      rip(e.x, e.y, 'voy', e.res === 'steal' ? 1.6 : 1); break;
+    case 'steal': if (A) SND.gotBall(e.x, e.y); say(T.got); rip(e.x, e.y, 'bell', 1.5); break;
+    case 'voyEnd': if (A) SND.voyEnd(); break;
+    case 'body': if (A) SND.body(e.x, e.y); break;
+    case 'foul': {
+      if (A) { SND.whistle(0.3); setTimeout(() => SND.whistle(0.6), 450); }
+      rip(e.x, e.y, 'voy', 2); resultSay(T.foulHead(e.why));
+      if (BOT) console.log('bot foul', W.results[W.results.length - 1]); break;
+    }
+    case 'oppgoal': { if (A) { SND.oppNet(e.y); SND.whistle(0.5); } resultSay(T.head.lost); break; }
+    case 'ask': {
+      const deg = e.ang * 180 / Math.PI, ad = Math.abs(deg), R = deg > 0, m = Math.max(1, Math.round(e.d));
+      let txt;
+      if (ad < 8 && e.d < 12) txt = T.askShoot(m);
+      else { const dir = ad < 8 ? T.straight : ad < 35 ? (R ? T.slR : T.slL) : ad < 110 ? (R ? T.right : T.left) : (R ? T.backR : T.backL); txt = T.askFmt(dir, m); }
+      say(txt); break;
+    }
+    case 'askNo': if (A) SND.blip(); break;
+    case 'out': if (A) SND.whistle(0.3); if (!e.quiet) say(T.out); break;
+    case 'miss': say(e.side === 'R' ? T.missR : T.missL); break;      // ガイドが外れた方を言う
+    case 'left30': say(T.left30); break;
+    case 'left60': say(T.left60); break;
+    case 'full': if (A) { SND.whistle(0.5); setTimeout(() => SND.whistle(0.9), 650); } matchEnd(); break;
+    case 'tut': say(e.back ? T.tutBack + ' ' + tutText(1) : (e.aligned ? T.tutAligned + ' ' : '') + tutText(e.n)); break;
+    case 'snap': if (A) SND.tick(); break;
+    case 'chirp': if (A) SND.chirp(); rip(e.x, e.y, 'bell'); break;
+    case 'goal': {
+      if (A) { SND.net(); SND.cheer(); SND.whistle(0.5); }
+      rip(e.x, e.y, 'goal', 4);
+      const r = W.results[W.results.length - 1];
+      resultSay(T.head.goal);
+      if (r.type !== 'tut') saveBest(r); if (BOT) console.log('bot goal', r);
+      break;
+    }
+    case 'timeup': { if (A) SND.whistle(0.8); resultSay(T.head.timeup); if (BOT) console.log('bot timeup', W.results[W.results.length - 1]); break; }
+    case 'start': {
+      setMsg(''); if (A) SND.whistle(0.35);
+      const tt = (IS_TOUCH || THUMB) && e.n === 1 && !BOT ? ' ' + (THUMB ? T.thumbSay + ' ' + (gyroLive() ? T.gyroSayOn : T.gyroSayNo) : T.touchSay) : '';   // スマホの人には 1 本目に操作を声で
+      if (W.mode === 'daily') { say(T.dailyGo + tt); break; }
+      if (W.mode === 'match') { say((e.n === 1 ? T.matchGo + tt + ' ' : '') + T.mt[e.type]); break; }
+      if (e.type === 'tut') { say((LV <= 2 ? T.goSee : T.go) + tt + ' ' + T.tutFirst + ' ' + tutText(1)); break; }
+      const rt = e.type === 'solo' && !OPP_ON ? '' : T.rt[e.type];
+      say((e.n === 1 ? (LV <= 2 ? T.goSee : T.go) + tt : T.next) + (rt ? ' ' + rt : '')); break;
+    }
+  }
+}
+/* ====================== きょうの1本・3分マッチ・終わりの画像 ======================
+   きょうの1本：UTC の日付が種＝世界中が同じ場面（相手1人・強さ3）。1 日 1 回目だけ数える・何日つづけたか（voy_daily）。?day=YYYY-MM-DD で日を固定
+   3分マッチ：相手1人→守り→相手2人 を 3 分くり返し、ゴール＝自分の点、決められた＝相手の点（voy_m3）。?mt=秒 で長さ
+   終わり：走った距離・鈴（タッチ）・聞いたボイ を声と 1080×1350 の画像で。S で送る */
+const special = w => w.mode === 'daily' || w.mode === 'match';
+const DAYKEY = () => /^\d{4}-\d\d-\d\d$/.test(Q.get('day') || '') ? Q.get('day') : new Date().toISOString().slice(0, 10);
+function hashStr(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+function prevDay(k) { const d = new Date(k + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); }
+function loadDaily() { try { const d = JSON.parse(localStorage.getItem('voy_daily') || 'null'); if (d && typeof d === 'object') return d; } catch (e) {} return { last: '', streak: 0, best: 0, r: null }; }
+function makeWorld() {
+  if (PLAYMODE === 'daily') { const w = newWorld(hashStr('voy-' + DAYKEY()), { mode: 'daily' }); w.oppLv = 3; return w; }
+  if (PLAYMODE === 'm3') return newWorld(Q.has('seed') ? SEED0 : (Date.now() % 1e9) >>> 0, { mode: 'match', auto: BOT });
+  return newWorld(SEED0, { tut: needTut(), auto: BOT });
+}
+let END = null;
+const starsTxt = n => '★'.repeat(n) + '☆'.repeat(3 - n);
+function laterCard(ms) { const w = W; setTimeout(() => { if (W === w && MODE.m === 'play' && !BOT) showCard(); }, ms); }
+function matchSay(head) {
+  const s = W.score; setMsg(`${s[0]} - ${s[1]}`);
+  sayTimer = setTimeout(() => say(head + ' ' + T.pk.now(Math.min(9, s[0]), Math.min(9, s[1]))), 600);
+}
+function matchEnd() {
+  const s = W.score; let rec = null;
+  try { rec = JSON.parse(localStorage.getItem('voy_m3') || 'null'); } catch (e) {}
+  if (!rec || typeof rec !== 'object') rec = { n: 0, w: 0, best: 0 };
+  const isBest = !BOT && rec.n > 0 && s[0] > rec.best;
+  if (!BOT) { rec.n++; if (s[0] > s[1]) rec.w++; rec.best = Math.max(rec.best, s[0]); try { localStorage.setItem('voy_m3', JSON.stringify(rec)); } catch (e) {} }
+  const m = Math.round(W.tot.dist);
+  clearTimeout(sayTimer); setMsg(`${s[0]} - ${s[1]}`);
+  sayTimer = setTimeout(() => say(T.full + ' ' + T.pk.over(Math.min(9, s[0]), Math.min(9, s[1])) + (isBest ? ' ' + T.newRec : '') + ' ' + T.endKeys), 1100);
+  END = { kind: 'match', me: s[0], them: s[1], lv: LV, dist: m, touches: W.tot.touches, heard: W.heard, isBest };
+  if (BOT) console.log('bot match', END);
+  laterCard(1800);
+}
+function dailyEnd(head, r) {
+  const day = DAYKEY(), D = loadDaily(), first = D.last !== day && !BOT;
+  if (first) {
+    D.streak = D.last === prevDay(day) ? (D.streak || 0) + 1 : 1; D.best = Math.max(D.best || 0, D.streak); D.last = day;
+    D.r = { ok: !!r.ok, time: +r.time.toFixed(1), touches: r.touches, stars: r.stars, lv: LV };
+    try { localStorage.setItem('voy_daily', JSON.stringify(D)); } catch (e) {}
+  }
+  const m = clamp(Math.round(r.dist), 1, 150);
+  const short = head + ' ' + T.stars(r.stars);
+  const detail = T.body(Math.round(r.time), r.touches, r.stolen) + ' ' + T.recall(m, Math.min(99, r.touches), Math.min(99, W.heard), LV >= 5) + ' ' +
+    (first ? (D.streak >= 2 && D.streak <= 60 ? T.days(D.streak) + ' ' : '') : T.dailyDone + ' ') + T.endKeys;
+  setMsg(starsTxt(r.stars) + '\n' + short + '\n' + detail);
+  sayTimer = setTimeout(() => { say(short); say(detail, true); }, 600);
+  END = { kind: 'daily', day, ok: !!r.ok, time: r.time, stars: r.stars, dist: m, touches: r.touches, heard: W.heard, lv: LV, streak: D.streak || 0, first, path: W.path.slice(), ball: [W.B.x, W.B.y] };
+  laterCard(2200);
+}
+function makeCard() {
+  const E = END, c = document.createElement('canvas'); c.width = 1080; c.height = 1350;
+  const x = c.getContext('2d'), F = (px, wt) => `${wt || 700} ${px}px system-ui,"Hiragino Sans","Yu Gothic UI",Meiryo,sans-serif`;
+  const fit = (txt, px, wt, maxW) => { x.font = F(px, wt); const w = x.measureText(txt).width; if (w > maxW) x.font = F(Math.floor(px * maxW / w), wt); };
+  const bg = x.createLinearGradient(0, 0, 0, 1350); bg.addColorStop(0, '#101826'); bg.addColorStop(1, '#05070a');
+  x.fillStyle = bg; x.fillRect(0, 0, 1080, 1350); x.textAlign = 'center';
+  x.fillStyle = '#e8c45a'; fit(T.sub, 40, 600, 960); x.fillText(T.sub, 540, 105);
+  x.fillStyle = '#f2f4f7'; x.font = F(150, 800); x.fillText(LANG === 'ja' ? 'ボイ！' : 'Voy!', 540, 265);
+  const ml = E.kind === 'daily' ? `📅 ${T.cardDaily}  ${E.day}` : `⚽ ${T.cardMatch}`;
+  x.fillStyle = '#9aa3ad'; fit(ml, 46, 600, 960); x.fillText(ml, 540, 350);
+  const big = E.kind === 'daily' ? (E.ok ? T.cardGoal : T.cardNo) : `${E.me} − ${E.them}`;
+  x.fillStyle = '#fff'; fit(big, 170, 800, 980); x.fillText(big, 540, 545);
+  const l2 = E.kind === 'daily' ? (E.ok ? `${E.time.toFixed(1)}${T.cardSec}  ${starsTxt(E.stars)}` : T.cardTry) : (E.me > E.them ? T.cardWin : E.me < E.them ? T.cardLose : T.cardDraw);
+  x.fillStyle = '#e8c45a'; fit(l2, 66, 700, 960); x.fillText(l2, 540, 650);
+  // 上から見たピッチ（40×20 m → 800×400）。きょうの1本は 自分が暗闇の中で歩いた道すじ
+  const X0 = 140, Y0 = 720, K = 20, px = v => X0 + v * K, py = v => Y0 + v * K;
+  x.strokeStyle = '#2f3a47'; x.lineWidth = 4; x.strokeRect(X0, Y0, PL * K, PW * K);
+  x.beginPath(); x.moveTo(px(PL / 2), Y0); x.lineTo(px(PL / 2), Y0 + PW * K); x.stroke();
+  x.beginPath(); x.arc(px(PL / 2), py(GY), 5 * K, 0, Math.PI * 2); x.stroke();
+  x.strokeStyle = '#e8c45a'; x.lineWidth = 10; x.beginPath(); x.moveTo(px(PL), py(GY - GHW)); x.lineTo(px(PL), py(GY + GHW)); x.stroke();
+  if (E.kind === 'daily' && E.path && E.path.length > 1) {
+    x.strokeStyle = 'rgba(140,210,255,.9)'; x.lineWidth = 6; x.lineJoin = 'round'; x.lineCap = 'round';
+    x.beginPath(); E.path.forEach((q, i) => i ? x.lineTo(px(q[0]), py(q[1])) : x.moveTo(px(q[0]), py(q[1]))); x.stroke();
+    x.fillStyle = '#8cd2ff'; x.beginPath(); x.arc(px(E.path[0][0]), py(E.path[0][1]), 11, 0, Math.PI * 2); x.fill();
+    x.fillStyle = '#fff'; x.beginPath(); x.arc(px(clamp(E.ball[0], 0, PL + 0.7)), py(clamp(E.ball[1], 0, PW)), 9, 0, Math.PI * 2); x.fill();
+  } else if (E.kind === 'match') {
+    x.font = F(60, 700); x.fillStyle = '#fff';
+    x.fillText('⚽'.repeat(Math.min(8, E.me)) || '—', 540, py(GY) - 30); x.globalAlpha = 0.45; x.fillText('⚽'.repeat(Math.min(8, E.them)) || '—', 540, py(GY) + 70); x.globalAlpha = 1;
+  }
+  const st = T.cardStats(E.dist, E.touches, E.heard);
+  x.fillStyle = '#c9d0d8'; fit(st, 42, 600, 980); x.fillText(st, 540, 1195);
+  const l4 = T.cardLv(E.lv) + (E.kind === 'daily' && E.streak >= 2 ? '  ·  🔥 ' + T.cardDays(E.streak) : '') + (E.kind === 'match' && E.isBest ? '  ·  ' + T.newRec : '');
+  x.fillStyle = '#9aa3ad'; fit(l4, 40, 600, 980); x.fillText(l4, 540, 1257);
+  x.fillStyle = '#5c6570'; fit(T.cardFoot, 30, 500, 980); x.fillText(T.cardFoot, 540, 1315);
+  return c;
+}
+function shareText() {
+  const E = END, name = LANG === 'ja' ? 'ボイ！' : 'Voy!';
+  const body = E.kind === 'daily'
+    ? `📅 ${name} ${T.cardDaily} ${E.day}：` + (E.ok ? `${T.cardGoal} ${E.time.toFixed(1)}${T.cardSec} ${starsTxt(E.stars)}` : T.cardNo) + `（${T.cardLv(E.lv)}）` + (E.streak >= 2 ? ` 🔥${T.cardDays(E.streak)}` : '')
+    : `⚽ ${name} ${T.cardMatch}：${E.me}−${E.them} ` + (E.me > E.them ? T.cardWin : E.me < E.them ? T.cardLose : T.cardDraw) + `（${T.cardLv(E.lv)}）`;
+  return body + '\n' + T.cardStats(E.dist, E.touches, E.heard) + '\n' + T.cardFoot;
+}
+function showCard() {
+  if (!END) return;
+  const c = makeCard(); END.canvas = c;
+  const im = document.getElementById('cardImg'); im.src = c.toDataURL('image/png'); im.alt = shareText();
+  document.getElementById('cShare').textContent = T.cShare; document.getElementById('cAgain').textContent = T.cAgain;
+  document.getElementById('cMenu').textContent = T.cMenu; document.getElementById('cHint').textContent = T.cHint;
+  document.getElementById('card').style.display = 'flex';
+}
+function hideCard() { document.getElementById('card').style.display = 'none'; }
+async function shareGo() {
+  if (!END) return; const text = shareText();
+  const copy = async () => { try { await navigator.clipboard.writeText(text); say(T.copied); } catch (e) {} };
+  if (!navigator.share) { copy(); return; }
+  try {
+    let files = null;
+    try { const c = END.canvas || makeCard(), b = await new Promise(r => c.toBlob(r, 'image/png')), f = new File([b], 'voy.png', { type: 'image/png' }); if (navigator.canShare && navigator.canShare({ files: [f] })) files = [f]; } catch (e) {}
+    await navigator.share(files ? { text, files } : { text });
+  } catch (e) { if (!e || e.name !== 'AbortError') copy(); }
+}
+function modeRestart() { hideCard(); clearTimeout(sayTimer); stopSpeech(); stopCharge(); END = null; W = makeWorld(); setMsg(''); try { cv.focus(); } catch (e) {} }
+function toTitle() { hideCard(); clearTimeout(sayTimer); stopSpeech(); stopCharge(); END = null; setMsg(''); MODE.m = 'title'; buildMenu(); document.getElementById('menu').style.display = 'flex'; }
+document.getElementById('cShare').onclick = shareGo; document.getElementById('cAgain').onclick = modeRestart; document.getElementById('cMenu').onclick = toTitle;
+
+function saveBest(r) {
+  try {
+    const b = JSON.parse(localStorage.getItem('voy_best') || 'null');
+    if (!BOT && (!b || r.time < b.time)) localStorage.setItem('voy_best', JSON.stringify({ time: +r.time.toFixed(1), touches: r.touches, lv: LV, at: new Date().toISOString() }));
+  } catch (e) {}
+}
+
+/* ====================== 入力 ====================== */
+const KEY = {}; let kickDown = null, kickQ = null, askQ = false, voyQ = false;
+const MODE = { m: 'title' };     // title / lrtest / play / calib / pause
+addEventListener('keydown', e => {
+  const k = e.code;
+  if (e.target && e.target.tagName === 'INPUT') { if (k === 'Enter') netJoin(); return; }   // 合言葉の入力中
+  if (e.target && e.target.tagName === 'BUTTON' && (k === 'Space' || k === 'Enter')) return;   // ボタンの上の Space／Enter は そのボタン
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(k)) e.preventDefault();
+  if (k === 'KeyN' && !e.repeat) { toggleVoice(); return; }
+  if (k === 'KeyG' && !e.repeat && THUMB) { gyroToggle(); return; }
+  if (MODE.m === 'title' || MODE.m === 'pause') {
+    if (MODE.m === 'title' && k === 'KeyO') { netHost(); return; }
+    if (MODE.m === 'title' && k === 'KeyJ') { const ip = document.getElementById('netCode'); if (ip && ip.value.replace(/\D/g, '').length === 4) netJoin(); else if (ip) { ip.focus(); say(T.net.typeCode); } return; }
+    if (k === 'KeyK') { startEar(); return; }
+    if (k === 'KeyT' || k === 'KeyM') { PLAYMODE = k === 'KeyT' ? 'daily' : 'm3'; MODE.m = 'title'; startGame(); return; }
+    if (k === 'KeyP' || k === 'Digit3') { PLAYMODE = 'pk'; if (!Q.has('lv')) LV = 1; MODE.m = 'title'; startGame(); return; }
+    else if (k === 'Digit1' || k === 'Numpad1') { PLAYMODE = 'match'; LV = 1; MODE.m = 'title'; startGame(); }
+    else if (k === 'Digit5' || k === 'Numpad5') { PLAYMODE = 'match'; LV = 5; MODE.m = 'title'; startGame(); }
+    else if (k === 'Space' || k === 'Enter') { e.preventDefault(); if (MODE.m === 'title' && !Q.has('lv')) LV = 1; startGame(); }
+    if (k === 'KeyH' && !e.repeat) say(T.help);
+    return;
+  }
+  if (e.repeat) { KEY[k] = true; return; }
+  KEY[k] = true; KEYT[k] = performance.now();
+  if ((MODE.m === 'play' || MODE.m === 'calib' || MODE.m === 'ear') && TURN_KEYS[k]) snapQ += TURN_KEYS[k];   // ちょん＝30°
+  audioInit();
+  if (MODE.m === 'ear') { earKey(k); return; }
+  if (MODE.m === 'lrtest') { lrKey(k); return; }
+  if (MODE.m === 'calib') { if (k === 'Space') calKey(); if (k === 'Escape') calEnd(true); return; }
+  if (W.type === 'pk') {   // PK：GK の Space はすぐ（真ん中に飛ぶ）・終わったら Space でもう一度・R でやり直し
+    if (k === 'KeyH') { say(T.pk.help); return; }
+    if (k === 'Escape') { if (NET) say(T.net.noPause); else pauseGame(); return; }
+    if (k === 'KeyL') { LV = LV >= 5 ? 1 : LV + 1; say(T.lvName(LV)); return; }
+    if (W.pk.phase === 'over') { if ((k === 'Space' || k === 'Enter' || k === 'KeyR') && W.t - W.endAt > 1.0) pkRestart(); return; }
+    // ネットの子の GK：ドンのあとのキーは「ドンから何秒」をつけて親へ（往復の遅れで窓が消えないように）
+    if (W.netGuest && W.pk.keeper === 'B' && W.pk.phase === 'flight' && (TURN_KEYS[k] || k === 'Space')) {
+      snapQ = 0; if (W.pk.dive == null && !NETIN.sentDv) { NETIN.sentDv = true; netSend({ t: 'dv', d: k === 'Space' ? 0 : -TURN_KEYS[k], dt: (performance.now() - NETKICK) / 1000 }); }
+      return;
+    }
+    if (k === 'KeyR' && !NET) { beginPK(); return; }
+    if (k === 'Space') { if (W.pk.keeper === PKME) kickQ = 0; else kickDown = performance.now(); }
+    return;
+  }
+  if (k === 'KeyH') { say(W.type === 'tut' && W.state === 'play' ? tutText(W.tutStage) : T.help); return; }
+  if (special(W) && W.state !== 'play' && !W.auto) {   // きょうの1本・3分マッチの終わり：S＝送る・R＝もう一度・Space＝メニューへ（マッチの途中の合間は何もしない）
+    if (W.mode === 'match' && !W.matchOver) { if (k === 'Escape') pauseGame(); return; }
+    if (W.t - W.endAt > 1.0) { if (k === 'KeyS') shareGo(); else if (k === 'KeyR') modeRestart(); else if (k === 'Space' || k === 'Enter' || k === 'Escape') toTitle(); }
+    return;
+  }
+  if (W.state !== 'play' && !W.auto) {      // 1 本の終わり：Space で次・R でもう一度（お手本の時間切れは どちらもお手本をやり直す）
+    const last = W.results[W.results.length - 1], tutAgain = W.type === 'tut' && !(last && last.ok);
+    if (W.t - W.endAt > 1.0) { if (k === 'Space' || k === 'Enter') { clearTimeout(sayTimer); newRound(W, tutAgain); } if (k === 'KeyR') { clearTimeout(sayTimer); newRound(W, true); } }
+    if (k === 'Escape') pauseGame();
+    return;
+  }
+  if (k === 'Space') kickDown = performance.now();
+  if (k === 'KeyE') askQ = true;
+  if (k === 'KeyQ') { const t = performance.now() / 1000; if (t - COACH.posT >= 3) { COACH.posT = t; COACH.t = t; say(posText()); } else if (AC.ctx) SND.blip(); }   // 3 秒に 1 回
+  if (k === 'KeyV') voyQ = true;
+  if (k === 'KeyL') { LV = LV >= 5 ? 1 : LV + 1; say(T.lvName(LV)); }
+  if (k === 'KeyR' && !special(W)) {   // 途中のやり直しは失敗として数える（連続も強さも下がる）。お手本はそのままやり直し
+    if (W.type !== 'tut') endRound(W, { ok: false, retry: true, state: 'retry' }, 0);
+    newRound(W, true); stopCharge();
+  }
+  if (k === 'Escape') pauseGame();
+});
+addEventListener('keyup', e => {
+  KEY[e.code] = false;
+  if (e.code === 'Space' && kickDown != null && MODE.m === 'play') { kickQ = (performance.now() - kickDown) / 1000; kickDown = null; }
+});
+function stopCharge() { kickDown = null; if (AC.chargeG) { const t = AC.ctx.currentTime; AC.chargeG.gain.cancelScheduledValues(t); AC.chargeG.gain.setValueAtTime(0, t); } }
+addEventListener('blur', () => { for (const k in KEY) KEY[k] = false; stopCharge(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { for (const k in KEY) KEY[k] = false; stopCharge(); } });
+addEventListener('pointerdown', () => { audioInit(); });
+/* ---- スマホ：タッチをキーに直して流す（キーボードと同じ道を通す＝メニュー・PK・耳のけいこも そのまま動く） ----
+   左半分＝指を上へすべらせて進む（下へ＝下がる）・横へ 46px ごとに 30° 回る／右半分＝タップで蹴る・長押しで強く・上へすべらせてボイ！
+   上のはし（16%）＝左 Q（今どこ？）・右 E（ガイド）／3 本指＝止める。左右テストは左半分・右半分、PK の GK は左・まんなか・右の 3 つ */
+const TCH = {};
+function fireKey(type, code) { window.dispatchEvent(new KeyboardEvent(type, { code })); }
+function tapKey(code) { fireKey('keydown', code); fireKey('keyup', code); }
+const touchLive = () => ['play', 'ear', 'lrtest', 'calib'].includes(MODE.m) && document.getElementById('card').style.display !== 'flex';
+const pkKeeping = () => MODE.m === 'play' && W.type === 'pk' && W.pk && W.pk.keeper === PKME && W.pk.phase !== 'over' && W.pk.phase !== 'between';
+function touchDrop(id) {
+  const o = TCH[id]; if (!o) return;
+  if (o.z === 'S' || o.z === 'P') { thumbDrop(o); delete TCH[id]; return; } if (o.z === 'L' && o.fw) fireKey('keyup', o.fw > 0 ? 'KeyW' : 'KeyS'); if (o.z === 'R' && !o.dead) fireKey('keyup', 'Space'); delete TCH[id]; }
+function touchVoy(o) { o.dead = true; kickDown = null; stopCharge(); tapKey('KeyV'); }
+addEventListener('touchstart', e => {
+  if (!touchLive()) return;
+  e.preventDefault(); audioInit();
+  const WW = innerWidth, HH = innerHeight;
+  if (e.touches.length >= 3) { for (const id in TCH) { TCH[id].dead = true; touchDrop(id); } kickDown = null; stopCharge(); tapKey('Escape'); return; }
+  for (const t of e.changedTouches) {
+    const x = t.clientX, y = t.clientY;
+    if (MODE.m === 'lrtest') { tapKey(x < WW / 2 ? 'ArrowLeft' : 'ArrowRight'); continue; }
+    if (pkKeeping()) { tapKey(x < WW / 3 ? 'ArrowLeft' : x > WW * 2 / 3 ? 'ArrowRight' : 'Space'); continue; }
+    if (MODE.m === 'play' && W.state === 'play' && W.type !== 'pk' && y < HH * 0.16) { tapKey(x < WW / 2 ? 'KeyQ' : 'KeyE'); continue; }
+    if (THUMB) { thumbStart(t); continue; }
+    if (x < WW / 2) TCH[t.identifier] = { z: 'L', sx: x, sy: y, n: 0, fw: 0 };
+    else if (Object.values(TCH).some(o => o.z === 'R' && !o.dead)) { for (const o of Object.values(TCH)) if (o.z === 'R' && !o.dead) touchVoy(o); TCH[t.identifier] = { z: 'R', sy: y, dead: true }; }   // 右に 2 本指＝ボイ！
+    else { TCH[t.identifier] = { z: 'R', sy: y, dead: false }; fireKey('keydown', 'Space'); }
+  }
+}, { passive: false });
+addEventListener('touchmove', e => {
+  if (!touchLive()) return;
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    const o = TCH[t.identifier]; if (!o) continue;
+    if (o.z === 'S') { thumbMove(o, t); continue; }
+    if (o.z === 'L') {
+      const want = Math.trunc((t.clientX - o.sx) / 46), dy = o.sy - t.clientY, fw = dy > 34 ? 1 : dy < -34 ? -1 : 0;
+      while (o.n < want) { tapKey('ArrowRight'); o.n++; } while (o.n > want) { tapKey('ArrowLeft'); o.n--; }
+      if (fw !== o.fw) { if (o.fw) fireKey('keyup', o.fw > 0 ? 'KeyW' : 'KeyS'); if (fw) fireKey('keydown', fw > 0 ? 'KeyW' : 'KeyS'); o.fw = fw; }
+    } else if (!o.dead && o.sy - t.clientY > 60) touchVoy(o);   // 右半分を上へすべらせる＝ボイ！
+  }
+}, { passive: false });
+/* ---- 親指モード（?thumb）：電車でも座ったまま・画面を見ないで（2026-11-18 横歩き＋ひねって向く） ----
+   親指＝歩く：置いた所が真ん中。上へ 28px＝進む（下へ 44px＝下がる）、横へ 24px＝正面を向いたまま横歩き、斜め＝斜めへ。離す＝止まって聞く。
+   スマホをひねる＝向く：親指を置いている間だけ、画面に垂直な軸の回転（ジャイロの角速度）を足していき、約 20° でカチ＝30° 回る。
+     置いた瞬間が 0°・離したら止める＝電車の揺れやカーブで勝手に回らない。倒す動きは使わない。反対へ戻すときは 10° の遊び。
+   ジャイロが使えないとき（許可なし・センサーなし・試しのページで止められる）：横へサッとはじいて離す＝カチ 30°、横にずらして押さえ続ける＝横歩き。
+   すぐ離す（0.25 秒・12px 以内）＝トン＝ちょん。もう 1 本の指＝蹴る（長押しで強く・上へすべらせてボイ！）、2 本同時トン＝ボイ！ */
+const TH_SIDE = 24, TH_FW = 28, TH_BACK = 44, TH_FLICK_MS = 260, TH_FLICK_PX = 30, TH_HOLD_MS = 200;
+const GYR = { want: true, seen: false, denied: false, acc: 0, lastDir: 0, f: 0, lastT: 0, sign: Q.has('gyroflip') ? 1 : -1 };
+try { GYR.want = localStorage.getItem('voy_gyro') !== '0'; } catch (e) {}
+const GY_STEP = 20, GY_BACK = 10, GY_NOISE = 4;   // 20° でカチ・反対へは +10° の遊び・毎秒 4° より小さい揺れは拾わない
+const gyroLive = () => THUMB && GYR.want && GYR.seen && !GYR.denied;
+function thBuzz(ms) { if (navigator.vibrate) try { navigator.vibrate(ms); } catch (e) {} }
+const thStick = () => Object.values(TCH).find(o => o.z === 'S');
+function gyroAsk() {   // iPhone は タップの中で許可を頼む（最初の「始める」のタップ）
+  if (!THUMB || !GYR.want) return;
+  try {
+    const DM = window.DeviceMotionEvent;
+    if (DM && typeof DM.requestPermission === 'function') DM.requestPermission().then(r => { GYR.denied = r !== 'granted'; }).catch(() => { GYR.denied = true; });
+  } catch (e) {}
+}
+function gyroRate(rate, now) {   // rate＝画面に垂直な軸のまわりの角速度（度/秒・反時計まわりが＋）
+  GYR.seen = true;
+  const dt = Math.min(0.1, Math.max(0, (now - GYR.lastT) / 1000)); GYR.lastT = now;
+  const st = thStick();
+  if (!THUMB || !GYR.want || GYR.denied || !st || st.pair || MODE.m !== 'play') { GYR.acc = 0; GYR.lastDir = 0; GYR.f = 0; return; }
+  GYR.f = GYR.f * 0.6 + rate * 0.4;                      // 細かい揺れをならす
+  if (Math.abs(GYR.f) < GY_NOISE) return;
+  GYR.acc += GYR.sign * GYR.f * dt;                       // 右へひねる＝＋
+  for (let n = 0; n < 6; n++) {
+    const thrR = GYR.lastDir < 0 ? GY_STEP + GY_BACK : GY_STEP, thrL = GYR.lastDir > 0 ? GY_STEP + GY_BACK : GY_STEP;
+    if (GYR.acc >= thrR) { GYR.acc -= thrR; GYR.lastDir = 1; st.moved = true; tapKey('ArrowRight'); thBuzz(12); }
+    else if (GYR.acc <= -thrL) { GYR.acc += thrL; GYR.lastDir = -1; st.moved = true; tapKey('ArrowLeft'); thBuzz(12); }
+    else break;
+  }
+}
+addEventListener('devicemotion', e => { const r = e.rotationRate; if (r && r.alpha != null) gyroRate(r.alpha, performance.now()); });
+function gyroToggle() {
+  GYR.want = !GYR.want; try { localStorage.setItem('voy_gyro', GYR.want ? '1' : '0'); } catch (e) {}
+  if (GYR.want) gyroAsk();
+  const b = document.getElementById('btnGyro'); if (b) b.textContent = T.gyroBtn(GYR.want);
+  say(GYR.want ? (GYR.seen && !GYR.denied ? T.gyroOnSay : T.gyroOnSay + ' ' + T.gyroSayNo) : T.gyroOffSay);
+}
+function thumbStart(t) {
+  const now = performance.now(), x = t.clientX, y = t.clientY;
+  const stick = thStick();
+  if (!stick) { TCH[t.identifier] = { z: 'S', sx: x, sy: y, x, y, fw: 0, t0: now, moved: false, pair: false }; GYR.acc = 0; GYR.lastDir = 0; GYR.f = 0; GYR.lastT = now; return; }
+  if (now - stick.t0 < 150 && !stick.moved) { stick.pair = true; TCH[t.identifier] = { z: 'P', t0: now }; return; }   // 2 本同時＝ボイ！のかまえ
+  TCH[t.identifier] = { z: 'R', sy: y, dead: false }; fireKey('keydown', 'Space');   // もう 1 本の指＝蹴る（トン＝ちょん・長押し＝強く）
+}
+function thumbMove(o, t) {
+  const dx = t.clientX - o.sx, dy = t.clientY - o.sy; o.x = t.clientX; o.y = t.clientY;
+  if (Math.hypot(dx, dy) > 12) o.moved = true;
+  if (o.pair) return;
+  const fw = dy < -TH_FW ? 1 : dy > TH_BACK ? -1 : 0;
+  if (fw !== o.fw) {
+    if (o.fw) fireKey('keyup', o.fw > 0 ? 'KeyW' : 'KeyS');
+    if (fw) { fireKey('keydown', fw > 0 ? 'KeyW' : 'KeyS'); thBuzz(20); }
+    o.fw = fw;
+  }
+}
+function thumbStrafe() {   // 毎コマ：親指の横のずれ＝横歩き（-1・0・1）。はじいて回る方式のときは、0.2 秒 押さえてから歩き出す（はじきと見分ける）
+  const o = thStick(); if (!o || o.pair) return 0;
+  const dx = o.x - o.sx;
+  if (Math.abs(dx) < TH_SIDE) return 0;
+  if (!gyroLive() && performance.now() - o.t0 < TH_HOLD_MS) return 0;
+  return Math.sign(dx);
+}
+function thumbDrop(o) {
+  const now = performance.now();
+  if (o.z === 'P') {   // 2 本同時のトン＝ボイ！
+    const st = thStick();
+    if (now - o.t0 < 350) { tapKey('KeyV'); thBuzz(30); if (st) st.voyed = true; }
+    return;
+  }
+  if (o.fw) fireKey('keyup', o.fw > 0 ? 'KeyW' : 'KeyS');
+  const dx = o.x - o.sx, dy = o.y - o.sy;
+  if (!gyroLive() && !o.pair && !o.voyed && now - o.t0 < TH_FLICK_MS && Math.abs(dx) > TH_FLICK_PX && Math.abs(dx) > Math.abs(dy) * 1.3) {   // 横へサッとはじく＝カチ 30°
+    tapKey(dx > 0 ? 'ArrowRight' : 'ArrowLeft'); thBuzz(12); return;
+  }
+  if (!o.moved && !o.pair && !o.voyed && now - o.t0 < 250) tapKey('Space');   // トン＝ちょん
+}
+function drawThumb() {   // 見える人のために：置いた所の輪と、指の位置（横＝横歩きの矢印）
+  const o = thStick(); if (!o) return;
+  const st = thumbStrafe();
+  g.save();
+  g.strokeStyle = 'rgba(255,255,255,0.28)'; g.lineWidth = 2; g.beginPath(); g.arc(o.sx, o.sy, 58, 0, Math.PI * 2); g.stroke();
+  g.fillStyle = 'rgba(255,255,255,0.10)'; g.beginPath(); g.arc(o.sx, o.sy, 58, 0, Math.PI * 2); g.fill();
+  g.font = '600 15px system-ui,sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillStyle = o.fw > 0 ? 'rgba(255,230,150,0.9)' : 'rgba(255,255,255,0.45)'; g.fillText('▲', o.sx, o.sy - TH_FW - 14);
+  g.fillStyle = st < 0 ? 'rgba(255,230,150,0.9)' : 'rgba(255,255,255,0.45)'; g.fillText('◀', o.sx - TH_SIDE - 20, o.sy);
+  g.fillStyle = st > 0 ? 'rgba(255,230,150,0.9)' : 'rgba(255,255,255,0.45)'; g.fillText('▶', o.sx + TH_SIDE + 20, o.sy);
+  const kx = o.sx + clamp(o.x - o.sx, -90, 90), ky = o.sy + clamp(o.y - o.sy, -80, 80);
+  g.fillStyle = o.fw || st ? 'rgba(255,230,150,0.75)' : 'rgba(255,255,255,0.6)'; g.beginPath(); g.arc(kx, ky, 22, 0, Math.PI * 2); g.fill();
+  if (gyroLive()) { g.fillStyle = 'rgba(255,255,255,0.5)'; g.font = '600 13px system-ui,sans-serif'; g.fillText('↺ ' + Math.round(GYR.acc) + '°', o.sx, o.sy + 78); }
+  g.restore();
+}
+const touchEnd = e => { for (const t of e.changedTouches) touchDrop(t.identifier); };
+addEventListener('touchend', touchEnd); addEventListener('touchcancel', touchEnd);
+
+function toggleVoice() {
+  VOICE = !VOICE; try { localStorage.setItem('voy_voice', VOICE ? '1' : '0'); } catch (e) {}
+  if (VOICE) say(T.voiceOn); else { stopSpeech(); live(T.voiceOff); }
+}
+const KEYT = {}, TURN_KEYS = { KeyA: -1, ArrowLeft: -1, KeyD: 1, ArrowRight: 1 };
+let snapQ = 0;
+const heldLong = k => KEY[k] && performance.now() - (KEYT[k] || 0) > 250;   // 0.25 秒より長く押していたら回り続ける
+function keyInput() {
+  const up = KEY.KeyW || KEY.ArrowUp, dn = KEY.KeyS || KEY.ArrowDown;
+  const lf = heldLong('KeyA') || heldLong('ArrowLeft'), rt = heldLong('KeyD') || heldLong('ArrowRight');
+  const sf = clamp((THUMB ? thumbStrafe() : 0) + (KEY.KeyC ? 1 : 0) - (KEY.KeyZ ? 1 : 0), -1, 1);   // 横歩き：親指の横・パソコンは Z／C
+  const inp = { fwd: (up ? 1 : 0) - (dn ? 1 : 0), strafe: sf, turn: (rt ? 1 : 0) - (lf ? 1 : 0), snap: clamp(snapQ, -6, 6), dash: !!(KEY.ShiftLeft || KEY.ShiftRight), kick: kickQ, ask: askQ, voy: voyQ };
+  kickQ = null; askQ = false; voyQ = false; snapQ = 0; return inp;
+}
+
+/* ====================== 左右テスト ====================== */
+let LR = null;
+function lrStart(n, auto) { LR = { n, i: 0, ok: 0, side: 0, wait: false, auto, res: [] }; MODE.m = 'lrtest'; setMsg(T.lrMsg); say(T.lrIntro); setTimeout(lrNext, LANG === 'ja' ? 4200 : 3600); }
+function lrNext() {
+  if (!LR || MODE.m !== 'lrtest') return;
+  LR.side = Math.random() < 0.5 ? -1 : 1; LR.wait = true;
+  if (AC.ctx) {   // 片方の耳だけ（StereoPanner ±1）。HRTF だと反対の耳にも少し入ってあいまいになる
+    const sp = AC.ctx.createStereoPanner(); sp.pan.value = LR.side * (FLIP ? -1 : 1); sp.connect(AC.master);
+    SND.burst(6, 0.7, 0.35, sp); setTimeout(() => { try { sp.disconnect(); } catch (e) {} }, 1500);
+  }
+}
+function lrKey(k) {
+  if (k === 'Enter' || k === 'Escape') { LR = null; setMsg(''); beginPlay(); return; }
+  if (!LR || !LR.wait) return;
+  if (k !== 'ArrowLeft' && k !== 'ArrowRight' && k !== 'KeyA' && k !== 'KeyD') return;
+  const ans = (k === 'ArrowLeft' || k === 'KeyA') ? -1 : 1, good = ans === LR.side;
+  LR.wait = false; LR.i++; if (good) LR.ok++; LR.res.push({ side: LR.side > 0 ? 'R' : 'L', ans: ans > 0 ? 'R' : 'L', good });
+  if (AC.ctx) toneHit(AC.master, now(), { f: good ? 880 : 330, gain: 0.08, dec: 0.12 });
+  if (LR.i < LR.n) { setTimeout(lrNext, 700); return; }
+  const n = LR.n, ok = LR.ok, auto = LR.auto; console.table(LR.res); console.log('lrtest', { correct: ok, of: n });
+  try { localStorage.setItem('voy_lr', JSON.stringify({ ok, n, flip: FLIP, at: new Date().toISOString() })); } catch (e) {}
+  if (!auto) { say(T.lrDone(ok, n)); LR = null; setMsg(''); MODE.m = 'play'; return; }
+  if (ok >= Math.ceil(n * 0.75)) { say(T.lrOK); LR = null; setMsg(''); setTimeout(beginPlay, 1300); }
+  else if (ok <= Math.floor(n * 0.25)) { FLIP = !FLIP; try { localStorage.setItem('voy_flip', FLIP ? '1' : '0'); } catch (e) {} say(T.lrFlip); LR = null; setMsg(''); setTimeout(beginPlay, 3500); }
+  else if (!LR.retried) { LR.retried = true; LR.i = 0; LR.ok = 0; LR.res = []; say(T.lrRetry); setTimeout(lrNext, 1600); }
+  else { LR = null; setMsg(''); beginPlay(); }
+}
+window.lrtest = function (n = 10) { audioInit(); hideMenu(); lrStart(n, false); return 'lrtest start'; };
+
+/* ====================== 向きのテスト calib() ====================== */
+let CAL = null;
+window.calib = function (n = 10) {
+  audioInit(); hideMenu();
+  CAL = { n, i: 0, res: [], spot: null, nextT: 0 }; MODE.m = 'calib';
+  say(T.calIntro); setTimeout(calNext, 3300); return 'calib start';
+};
+function calNext() {
+  if (!CAL) return;
+  // 鈴は時計の向き（30° ごと・12 時以外）に置く＝ちょんだけでも合わせられる。結果は度のまま
+  const hrs = [1, 2, 3, 4, 5, 6, -1, -2, -3, -4, -5], P = W.P, ang = P.a + hrs[(Math.random() * hrs.length) | 0] * SNAP + (Math.random() - 0.5) * 6 * D2R, d = 4 + Math.random() * 4;
+  CAL.spot = { x: P.x + Math.cos(ang) * d, y: P.y + Math.sin(ang) * d, d }; CAL.nextT = performance.now() / 1000; CAL.t0 = CAL.nextT;
+  setMsg(T.calMsg(CAL.i + 1, CAL.n));
+}
+function calTick() {
+  const P = W.P, inp = keyInput();
+  if (turnPlayer(P, inp) === 'done' && AC.ctx) SND.tick();
+  if (!CAL || !CAL.spot || !AC.ctx) return;
+  const t = performance.now() / 1000;
+  if (t >= CAL.nextT) { CAL.nextT = t + 0.7; placeWorld(SRC.cal, CAL.spot.x, CAL.spot.y, false); SND.burst(3, 0.6, 0.12, SRC.cal.in); }
+  placeWorld(SRC.cal, CAL.spot.x, CAL.spot.y, true);
+}
+function calKey() {
+  if (!CAL || !CAL.spot) return;
+  const P = W.P, err = angDiff(Math.atan2(CAL.spot.y - P.y, CAL.spot.x - P.x), P.a) * 180 / Math.PI;
+  CAL.res.push({ errDeg: +err.toFixed(1), absDeg: +Math.abs(err).toFixed(1), sec: +(performance.now() / 1000 - CAL.t0).toFixed(1), dist: +CAL.spot.d.toFixed(1) });
+  if (AC.ctx) toneHit(AC.master, now(), { f: Math.abs(err) <= 15 ? 880 : 330, gain: 0.08, dec: 0.12 });
+  CAL.i++; CAL.spot = null;
+  if (CAL.i >= CAL.n) calEnd(false); else setTimeout(calNext, 600);
+}
+function calEnd(cancel) {
+  if (CAL && CAL.res.length) {
+    console.table(CAL.res);
+    const a = CAL.res.reduce((s, r) => s + r.absDeg, 0) / CAL.res.length, k = CAL.res.filter(r => r.absDeg <= 15).length;
+    const sum = { trials: CAL.res.length, meanAbsDeg: +a.toFixed(1), within15: k, flip: FLIP };
+    console.log('calib', sum); window.lastCalib = { sum, res: CAL.res };
+    try { localStorage.setItem('voy_calib', JSON.stringify({ ...sum, at: new Date().toISOString() })); } catch (e) {}
+    if (!cancel) say(T.calDone(Math.round(a), k, CAL.res.length));
+  }
+  CAL = null; setMsg(''); MODE.m = 'play';
+}
+
+/* ====================== 耳のけいこ（最初の画面の K） ======================
+   真っ暗で「どこを向いているか分からない」を、数字で見える練習に。3 つを EAR_N 回ずつ：
+   ①鈴のほうを向く（ズレ°） ②ポストの「カン、カン」でゴールを向く（ズレ°） ③板の手前で止まる（板まで cm・ぶつかったら ×）
+   音はゲームと同じもの（鈴・ポスト・板の気配・足音）＝ここで育った耳がそのまま試合で使える。記録は voy_ear（30 回ぶん） */
+let EAR = null;
+const EAR_N = clamp(Math.round(+Q.get('earn') || 3), 1, 10);
+function earHist() { try { const h = JSON.parse(localStorage.getItem('voy_ear') || '[]'); return Array.isArray(h) ? h : []; } catch (e) { return []; } }
+function earWindOff() { if (AC.windG) AC.windG.gain.setTargetAtTime(0, AC.ctx.currentTime, 0.05); }
+function earSay(text, wait) { say(text); EAR.saidT = performance.now() / 1000; EAR.wait = wait || 1.8; EAR.phase = 'wait'; }
+function startEar() {
+  audioInit(); hideMenu(); stopSpeech(); stopCharge(); try { cv.focus(); } catch (e) {}
+  const lv0 = EAR ? EAR.lv0 : LV;
+  W = newWorld(SEED0, { auto: false }); W.ev = [];
+  EAR = { lv0, d: 0, i: 0, res: [[], [], []], phase: 'wait', next: 'trial', spot: null, nextT: 0, side: 0, saidT: 0, wait: 1.8 };
+  LV = 5; MODE.m = 'ear'; setMsg(T.earTitle);   // けいこの間は真っ暗（終わったら元の暗さに戻す）
+  earSay(T.earIntro + ' ' + T.ear[0]);
+}
+function earTrial() {
+  const E = EAR, P = W.P, hrs = [1, 2, 3, 4, 5, 6, -1, -2, -3, -4, -5], k = hrs[(Math.random() * hrs.length) | 0], jit = (Math.random() - 0.5) * 6 * D2R;
+  E.phase = 'run'; E.nextT = performance.now() / 1000; P.spd = 0; P.snapLeft = 0;
+  if (E.d === 0) {          // 鈴：時計の向き（ちょんだけでも合わせられる）・4〜8 m
+    P.x = 20; P.y = GY; const ang = P.a + k * SNAP + jit, d = 4 + Math.random() * 4;
+    E.spot = { x: P.x + Math.cos(ang) * d, y: P.y + Math.sin(ang) * d };
+    if (AC.ctx) placeWorld(SRC.cal, E.spot.x, E.spot.y, false);
+  } else if (E.d === 1) {   // ゴール：ピッチのどこかに立ち、ゴールから時計 k 時間ずれた向き
+    P.x = 12 + Math.random() * 18; P.y = 3 + Math.random() * 14; P.a = wrap(Math.atan2(GY - P.y, PL - P.x) - k * SNAP + jit);
+    if (AC.ctx) { placeWorld(SRC.postL, PL, GY - GHW, false); placeWorld(SRC.postR, PL, GY + GHW, false); }
+  } else {                  // 板：4〜7 m 先の板へまっすぐ
+    E.side = Math.random() < 0.5 ? 0 : PW; const d = 4 + Math.random() * 3;
+    P.x = 20; P.y = E.side ? PW - d : d; P.a = E.side ? Math.PI / 2 : -Math.PI / 2; P.stepPh = 0.65;
+    if (AC.ctx) placeWorld(SRC.wind, P.x, E.side, false);
+  }
+  setMsg(T.earMsg(E.d, E.i + 1, EAR_N));
+}
+function earTick() {
+  const E = EAR; if (!E) return;
+  const P = W.P, inp = keyInput(), t = performance.now() / 1000;
+  if (E.phase === 'wait') { if (t - E.saidT > E.wait && !isSpeaking()) { if (E.next === 'trial') earTrial(); else E.phase = 'over'; } return; }
+  if (E.phase !== 'run') return;
+  if (E.d < 2 && turnPlayer(P, inp) === 'done' && AC.ctx) SND.tick();
+  if (E.d === 0) {
+    if (!AC.ctx) return;
+    if (t >= E.nextT) { E.nextT = t + 0.7; SND.burst(3, 0.6, 0.12, SRC.cal.in); }
+    placeWorld(SRC.cal, E.spot.x, E.spot.y, true);
+  } else if (E.d === 1) {
+    if (!AC.ctx) return;
+    placeWorld(SRC.postL, PL, GY - GHW, true); placeWorld(SRC.postR, PL, GY + GHW, true);
+    if (t >= E.nextT) { E.nextT = t + 1.6; SND.post(0); setTimeout(() => { if (EAR === E && E.phase === 'run' && E.d === 1) SND.post(1); }, 320); }
+  } else {                  // 歩く（ゲームと同じ速さ・同じ板の気配）
+    const tgt = inp.fwd > 0 ? VRUN : inp.fwd < 0 ? -VBACK : 0, acc = Math.abs(tgt) > Math.abs(P.spd) ? 8 : 12;
+    P.spd += clamp(tgt - P.spd, -acc * DT, acc * DT);
+    const ny = P.y + Math.sin(P.a) * P.spd * DT, cy = clamp(ny, PR, PW - PR), hit = cy !== ny && Math.abs(P.spd) > 1;
+    P.y = cy;
+    if (AC.ctx) {
+      if (Math.abs(P.spd) > 0.4) { P.stepPh += DT * stepFreq(P.spd); if (P.stepPh >= 1) { P.stepPh -= 1; W.stepSide ^= 1; SND.step(Math.abs(P.spd), W.stepSide, 0); } } else P.stepPh = 0.65;
+      const db = Math.abs(P.y - E.side);
+      placeWorld(SRC.wind, P.x, E.side, true);
+      AC.windG.gain.setTargetAtTime(db < 2 ? (db < 1 ? 0.22 : 0.1 * (2 - db)) : 0, AC.ctx.currentTime, 0.1);
+      if (hit) SND.wallP(P.x, E.side);
+    }
+    if (hit) earAnswer(true);
+  }
+}
+function earAnswer(hit) {
+  const E = EAR, P = W.P; if (!E || E.phase !== 'run') return;
+  let txt, good;
+  if (E.d < 2) {
+    const tgt = E.d === 0 ? Math.atan2(E.spot.y - P.y, E.spot.x - P.x) : Math.atan2(GY - P.y, PL - P.x);
+    const err = Math.round(Math.abs(angDiff(tgt, P.a)) * 180 / Math.PI);
+    E.res[E.d].push(err); good = err <= 15; txt = T.earDeg(err);
+  } else {
+    P.spd = 0; earWindOff();
+    if (hit) { E.res[2].push(-1); good = false; txt = T.earHit; }
+    else { const cm = Math.round(Math.max(0, Math.abs(P.y - E.side) - PR) * 10) * 10; E.res[2].push(cm); good = cm <= 150; txt = T.earCm(cm); }
+  }
+  if (AC.ctx) toneHit(AC.master, now(), { f: good ? 880 : 330, gain: 0.08, dec: 0.12 });
+  E.spot = null; E.i++; setMsg(txt);
+  if (E.i < EAR_N) { earSay(txt, 0.9); return; }
+  E.i = 0; E.d++;
+  if (E.d < 3) earSay(txt + ' ' + T.ear[E.d], 1.2); else earDone(txt);
+}
+function earDone(lastTxt) {
+  const E = EAR, avg = a => a.length ? Math.round(a.reduce((s, v) => s + v, 0) / a.length) : 0;
+  const w = E.res[2].filter(v => v >= 0), hits = E.res[2].length - w.length;
+  const r = { at: new Date().toISOString(), bell: avg(E.res[0]), goal: avg(E.res[1]), wall: w.length ? Math.round(avg(w) / 10) * 10 : null, hits, n: EAR_N };
+  const h = earHist(), sc = x => x.bell + x.goal, prev = h[h.length - 1], best = h.length ? Math.min(...h.map(sc)) : null;
+  const tail = best != null && sc(r) < best ? T.newRec : prev && sc(r) < sc(prev) ? T.earBetter : '';
+  h.push(r); try { localStorage.setItem('voy_ear', JSON.stringify(h.slice(-30))); } catch (e) {}
+  console.log('ear', r, E.res); window.lastEar = { r, res: E.res };
+  E.next = 'over'; E.d = 3;
+  earSay([lastTxt, T.earDone(r), tail, T.earAgain].filter(Boolean).join(' '), 1.5);
+  setMsg(T.earTitle + '\n' + T.earSum(r) + (tail ? '\n' + tail : '') + '\n' + T.earKeys);
+}
+function earKey(k) {
+  const E = EAR; if (!E) return;
+  if (k === 'Escape') { earQuit(); return; }
+  if (k === 'KeyH' && E.d < 3) { say(T.ear[E.d]); return; }
+  if (k !== 'Space' && k !== 'Enter') return;
+  if (E.phase === 'run') earAnswer(false);
+  else if (E.d >= 3 && (E.phase === 'over' || performance.now() / 1000 - E.saidT > 1.5)) startEar();
+}
+function earQuit() {
+  if (EAR) LV = EAR.lv0;
+  EAR = null; earWindOff(); stopSpeech(); setMsg('');
+  MODE.m = 'title'; buildMenu(); document.getElementById('menu').style.display = 'flex';
+}
+
+/* ====================== 始める・止める ====================== */
+let PLAYMODE = Q.has('pk') ? 'pk' : Q.has('m3') ? 'm3' : Q.has('daily') ? 'daily' : 'match';   // 'match'＝ふつう・'pk'＝PK たいけつ・'daily'＝きょうの1本・'m3'＝3分マッチ
+let W = PLAYMODE === 'pk' ? newPK(SEED0, { auto: BOT }) : (PLAYMODE === 'm3' || PLAYMODE === 'daily') ? makeWorld() : newWorld(SEED0, { auto: BOT });
+let LR_DONE = false;   // 左右テストは 1 回だけ（モードを替えても くり返さない）
+function hideMenu() { document.getElementById('menu').style.display = 'none'; }
+function startGame() {
+  gyroAsk(); audioInit(); hideMenu(); try { cv.focus(); } catch (e) {}
+  if (MODE.m === 'pause') { MODE.m = 'play'; stopSpeech(); return; }
+  if (BOT || Q.has('skiptest') || LR_DONE) beginPlay(); else { LR_DONE = true; lrStart(4, true); }
+}
+function needTut() { if (BOT || TYPE_FIX || !OPP_ON) return false; if (Q.has('tut')) return true; try { return localStorage.getItem('voy_tut') !== '1'; } catch (e) { return true; } }
+function beginPlay() { hideCard(); END = null; if (PLAYMODE === 'pk') { beginPK(); return; } W = makeWorld(); MODE.m = 'play'; setMsg(''); }
+function pauseGame() { stopCharge(); MODE.m = 'pause'; buildMenu(T.paused); document.getElementById('menu').style.display = 'flex'; say(T.pausedSay); }
+function setMsg(s) { document.getElementById('msg').textContent = s; }
+function buildMenu(head) {
+  const c = document.getElementById('menuCard');
+  c.innerHTML = `<p class="ear">${T.earTop}</p><h1>${LANG === 'ja' ? 'ボイ！' : 'Voy!'}</h1><p class="sub">${head ? head + ' — ' : ''}${T.sub}</p>` +
+    `<div class="modes"><button id="btnSee">${T.btnSee}</button><button id="btnBlind">${T.btnBlind}</button><button id="btnPK">${T.pk.btn}</button><button id="btnDaily">${T.dailyBtn}</button><button id="btnM3">${T.m3Btn}</button><button id="btnEar">${T.earBtn}</button></div>` +
+    (() => { const D = loadDaily(), day = DAYKEY(), done = D.last === day, live = done || D.last === prevDay(day); return done || (live && D.streak >= 1) ? `<p class="see">${T.dailyMenu(done, D.r, live ? D.streak : 0)}</p>` : ''; })() +
+    (THUMB ? `<div class="net"><button id="btnGyro">${T.gyroBtn(GYR.want)}</button></div><p class="see">${T.thumbNote}</p>` : IS_TOUCH ? `<p class="see">${T.touchNote}</p>` : '') +
+    (() => { const h = earHist(), r = h[h.length - 1]; return r ? `<p class="see">${T.earLast}${T.earSum(r)}</p>` : ''; })() +
+    (head ? '' : `<p class="see">${T.btnHint}</p>` +
+      `<div class="net"><button id="btnHost">${T.net.host}</button><input id="netCode" inputmode="numeric" maxlength="4" placeholder="${T.net.ph}" aria-label="${T.net.ph}"><button id="btnJoin">${T.net.join}</button></div><p id="netMsg" class="see" aria-live="polite"></p>`) +
+    `<p class="see">${T.seeNote}</p>` +
+    T.lead.map(s => `<p>${s}</p>`).join('') +
+    `<table>${T.keys.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('')}</table>` +
+    (head ? `<button id="startBtn">${T.resume}</button>` : '') +
+    `<p class="small">${T.voy}<br>${T.small}<br><a href="${T.aboutUrl}" target="_blank" rel="noopener">${T.about}</a> ・ ${T.credit}</p>`;
+  const bs = document.getElementById('startBtn'); if (bs) bs.onclick = startGame;
+  const b1 = document.getElementById('btnSee'), b5 = document.getElementById('btnBlind');
+  // 止めたメニューからも 別のモードへ（そのときは新しく始める）
+  if (b1) b1.onclick = () => { PLAYMODE = 'match'; LV = 1; MODE.m = 'title'; startGame(); };
+  if (b5) b5.onclick = () => { PLAYMODE = 'match'; LV = 5; MODE.m = 'title'; startGame(); };
+  const bp = document.getElementById('btnPK'); if (bp) bp.onclick = () => { PLAYMODE = 'pk'; MODE.m = 'title'; startGame(); };
+  const be = document.getElementById('btnEar'); if (be) be.onclick = startEar;
+  const bd = document.getElementById('btnDaily'), bm = document.getElementById('btnM3');
+  if (bd) bd.onclick = () => { PLAYMODE = 'daily'; MODE.m = 'title'; startGame(); };
+  if (bm) bm.onclick = () => { PLAYMODE = 'm3'; MODE.m = 'title'; startGame(); };
+  const bh = document.getElementById('btnHost'), bj = document.getElementById('btnJoin');
+  if (bh) bh.onclick = netHost; if (bj) bj.onclick = netJoin;
+  const bg = document.getElementById('btnGyro'); if (bg) bg.onclick = gyroToggle;
+}
+buildMenu();
+
+/* ====================== 毎コマ ====================== */
+const cv = document.getElementById('cv'), g = cv.getContext('2d');
+let CW = 0, CH = 0, DPR = 1;
+function resize() { DPR = Math.min(2, window.devicePixelRatio || 1); CW = innerWidth; CH = innerHeight; cv.width = CW * DPR; cv.height = CH * DPR; cv.style.height = CH + 'px';   /* Android は 100vh が見えている高さより大きい */ g.setTransform(DPR, 0, 0, DPR, 0, 0); }
+addEventListener('resize', resize); if (window.visualViewport) visualViewport.addEventListener('resize', resize); resize();
+
+let last = performance.now(), accT = 0;
+function frame(nowMs) {
+  const dt = Math.min(0.1, (nowMs - last) / 1000); last = nowMs;
+  if (MODE.m === 'play') {
+    W.assist = LV <= 2;
+    accT += dt * (BOT ? FAST : 1);
+    let n = 0;
+    if (W.netGuest) { netGuestTick(); accT = 0; }
+    while (accT >= DT && n < 400) {
+      if (W.type === 'pk') pkStep(W, BOT ? pkAI(W, 'A') : keyInput(), NET && NET.role === 'host' ? netTakeIn() : pkAI(W, 'B', BOT || !isSpeaking()));
+      else step(W, BOT ? botInput(W) : keyInput());
+      n++; accT -= DT;
+      const evs = W.ev; W.ev = [];
+      if (NET && NET.role === 'host' && W.type === 'pk') { if (evs.length) netSend({ t: 'ev', a: evs }); if ((NET.f = (NET.f || 0) + 1) % 3 === 0) netSend(netSnap()); }
+      SILENT = BOT && FAST > 1;
+      for (const e of evs) handleEv(e);
+    }
+  } else if (MODE.m === 'calib') { accT += dt; while (accT >= DT) { calTick(); accT -= DT; } }
+  else if (MODE.m === 'ear') { accT += dt; while (accT >= DT) { earTick(); accT -= DT; } }
+  else accT = 0;
+  if (AC.ctx && MODE.m === 'play') updateAudio();
+  if (MODE.m === 'play' && !(BOT && FAST > 1)) coachTick();
+  draw();
+  requestAnimationFrame(frame);
+}
+// コーチ：本物のブラインドサッカーでも GK・監督・ガイドはずっと声を出している。
+// レベル 1〜2 は 2 秒ごと、3 は 5 秒ごと、4 以上は E のときだけ。言葉は 1〜3 語（音声合成の遅れが効かないように）
+// 「どっちへ回るか」まで言い、向きが合った瞬間は（ピッと同時に）必ず「そこ！」
+const COACH = { t: 0, hold: false, turnAcc: 0, lastA: null, lockB: false, lockG: false, sokoT: 0, posT: -9, gkT: 0 };
+// 角度を時計で：正面（±15°）＝12 時、右へ 60°＝2 時、左へ 30°＝11 時、うしろ＝6 時。n＝ちょんの回数・key＝押すキー
+function clockOf(ang) {
+  const k = Math.round(ang / SNAP), h = ((k % 12) + 12) % 12;
+  return { h: h === 0 ? 12 : h, n: Math.abs(k), key: k > 0 ? '→' : '←' };
+}
+function tutText(n) {   // お手本の言葉。①と④は今の向きから「ボールは 2 時。→ を 2 回 押して」
+  const P = W.P;
+  if (n === 1) { const c = clockOf(relBall(W).ang); return T.tutClock(T.tutBall, c.h, c.n, c.key) + ' ' + T.tut[1]; }
+  if (n === 4) { const c = clockOf(angDiff(Math.atan2(GY - P.y, PL - P.x), P.a)); return T.tutClock(T.tutGoal, c.h, c.n, c.key) + ' ' + T.tut[4]; }
+  return T.tut[n];
+}
+function coachLine(rb, hold, dG, angG, opp) {
+  const C = T.coach, deg = a => Math.abs(a) * 180 / Math.PI;
+  if (hold) {   // 持っている：ゴールの向きを時計で言い続ける
+    const gd = deg(angG);
+    if (gd < 8) return dG < 14 ? C.shootNow : C.haveStraight;
+    if (gd < 15) return C.fine(angG > 0 ? C.R : C.L);
+    return C.haveGoal(clockOf(angG).h);
+  }
+  const m = Math.max(1, Math.round(rb.d)), d = deg(rb.ang);
+  if (opp && rb.d < 3 && !voyOK(W)) return C.callVoy;                 // 相手のボールに近い：叫べ
+  if (d < 15) return rb.d < 1.5 ? C.there : C.twelve(m);
+  return (opp ? C.opp : C.ball)(clockOf(rb.ang).h, m);
+}
+function coachTick() {
+  const w = W, P = w.P;
+  if (w.type === 'pk') return;
+  if (w.state !== 'play') { COACH.lastA = null; COACH.hold = false; return; }
+  const rb = relBall(w), dG = Math.hypot(PL - P.x, GY - P.y), angG = angDiff(Math.atan2(GY - P.y, PL - P.x), P.a);
+  const opp = oppOwner(w), t = performance.now() / 1000;
+  const hold = !opp && (possess(w) || (COACH.hold && rb.d < 1.2));
+  // 持っていたのに離れた（蹴ったときは言わない）
+  if (COACH.hold && !hold && w.t - w.lastKickT > 1.0 && w.type !== 'tut') say(T.ballLeft);
+  COACH.hold = hold;
+  const iv = LV <= 2 ? 2 : LV === 3 ? 5 : 0, talk = iv && w.type !== 'tut';
+  // 回り続けている間も 30° ごとに「カチ」（どのレベルでも。ちょんの「カチ」は世界の 'snap' で鳴る）
+  const snd = AC.ctx && !SILENT;
+  if (COACH.lastA != null && !P.snapLeft && heldLong('KeyA') + heldLong('ArrowLeft') + heldLong('KeyD') + heldLong('ArrowRight')) {
+    COACH.turnAcc += Math.abs(angDiff(P.a, COACH.lastA));
+    while (COACH.turnAcc >= SNAP) { COACH.turnAcc -= SNAP; if (snd) SND.tick(); }
+  } else COACH.turnAcc = 0;
+  // 向きの手ごたえ（レベル 1〜3 と お手本）：ボールの方（12 時・±15°）で「ピッ」＋「そこ！」、ゴールの方（±8°）で「ポン」
+  if (LV <= 3 || w.type === 'tut') {
+    const lb = !hold && Math.abs(rb.ang) < 15 * D2R && !P.snapLeft, lg = Math.abs(angG) < 8 * D2R;
+    if (lb && !COACH.lockB) { if (snd) SND.lockBall(); if (talk && t - COACH.sokoT > 1) { COACH.sokoT = t; COACH.t = t; say(T.coach.there); } }
+    if (lg && !COACH.lockG) { if (snd) SND.lockGoal(); if (talk && hold && t - COACH.sokoT > 1) { COACH.sokoT = t; COACH.t = t; say(dG < 14 ? T.coach.shootNow : T.coach.haveStraight); } }
+    COACH.lockB = lb; COACH.lockG = lg;
+  }
+  COACH.lastA = P.a;
+  // 自陣の GK（レベル 3〜5）：3.5 秒ごと、慣れの階段のレベル 4 は 2.5 秒ごとに手拍子と「ヘイ！」
+  if (LV >= 3 && w.type !== 'tut' && t - COACH.gkT > (LV === 4 ? 2.5 : 3.5)) { COACH.gkT = t; if (snd) SND.gk(); rip(-0.3, GY, 'gk', 1.3); }
+  // レベル 4 は「慣れの階段」：監督が 6 秒ごとに位置を言う（レベル 5 は Q のときだけ）
+  if (LV === 4 && w.type !== 'tut' && t - COACH.t >= 6 && !isSpeaking()) { COACH.t = t; COACH.posT = t; say(posText()); return; }
+  // 声（お手本の間は お手本の指示だけ）
+  if (!talk || t - COACH.t < iv) return;
+  if (isSpeaking()) return;    // 大事な声（結果・ガイド）を消さない
+  COACH.t = t;
+  say(coachLine(rb, hold, dG, angG, opp));
+}
+// 監督の「今どこ？」：ゾーン（12 m の点線で 自陣／真ん中／敵陣）・左右（攻める向きから見て）・ゴールと板の時計と距離
+function posText() {
+  const P = W.P, C = T.pos;
+  const zone = P.x < 12 ? C.own : P.x > PL - 12 ? C.att : C.mid, lat = P.y < 7 ? C.left : P.y > PW - 7 ? C.right : C.center;
+  const angG = angDiff(Math.atan2(GY - P.y, PL - P.x), P.a), dG = Math.max(1, Math.round(Math.hypot(PL - P.x, GY - P.y)));
+  const by = P.y < GY ? 0 : PW, db = Math.max(1, Math.round(Math.abs(P.y - by))), angB = angDiff(Math.atan2(by - P.y, 0), P.a);
+  return C.fmt(zone, lat, clockOf(angG).h, dG, clockOf(angB).h, db);
+}
+// 向きが合っている間（±10°）は鈴をはっきり・少し大きく、ずれるほどこもる（レベル 1〜3）。耳だけで「合っている」が続けて分かる
+function ballClarity() {
+  if (LV > 3 || COACH.hold) return { cut: 1, gain: 1 };
+  const a = Math.abs(relBall(W).ang) * 180 / Math.PI;
+  return a < 15 ? { cut: 1.8, gain: 1.35 } : { cut: Math.max(0.3, 1 - (a - 15) / 120), gain: 0.9 };
+}
+function updateAudio() {
+  const still = W.P.stillT > 1, cl = ballClarity();     // 止まって聞く・向きが合っている＝鈴がはっきり
+  placeWorld(SRC.ball, W.B.x, W.B.y, true, still ? Math.max(cl.cut, 1.7) : cl.cut);
+  SRC.ball.in.gain.setTargetAtTime(cl.gain * (still ? 1.2 : 1), AC.ctx.currentTime, 0.08);
+  // 蹴る強さの音
+  const held = kickDown != null && W.state === 'play' && !(W.type === 'pk' && W.pk.kicker !== PKME) ? (performance.now() - kickDown) / 1000 : -1, ct = AC.ctx.currentTime;
+  if (held > 0.1) {
+    const k = clamp((held - 0.15) / 0.65, 0, 1);
+    AC.chargeO.frequency.setTargetAtTime(110 * Math.pow(4, k), ct, 0.02); AC.chargeF.frequency.setTargetAtTime(600 + 1400 * k, ct, 0.02);
+    AC.chargeG.gain.setTargetAtTime(0.05 + 0.03 * k, ct, 0.02);
+  } else AC.chargeG.gain.setTargetAtTime(0, ct, 0.03);
+  placeWorld(SRC.postL, PL, GY - GHW, true); placeWorld(SRC.postR, PL, GY + GHW, true);
+  placeWorld(SRC.goal, PL + 0.4, GY, true);
+  W.O.forEach((o, i) => placeWorld(SRC.opp[i], o.x, o.y, true));
+  placeWorld(SRC.gk, -0.3, GY, true);
+  // 板の気配（レベル 3〜5）：一番近い板の、自分の真横の点から。2 m 以内で小さく、1 m 以内で少し強く
+  { const P = W.P, by = P.y < GY ? 0 : PW, db = Math.abs(P.y - by);
+    placeWorld(SRC.wind, P.x, by, true);
+    const gw = LV >= 3 && W.state === 'play' && db < 2 ? (db < 1 ? 0.22 : 0.1 * (2 - db)) : 0;
+    AC.windG.gain.setTargetAtTime(gw, AC.ctx.currentTime, 0.1); }
+  // 息
+  const e = W.P.exert, c = AC.ctx, t = c.currentTime;
+  if (e > 0.05 && t >= AC.bNext) {
+    const per = 2.6 - 1.5 * e, a = 0.05 + 0.22 * e, gg = AC.breathG.gain, f = AC.breathF.frequency;
+    gg.cancelScheduledValues(t); gg.setValueAtTime(0.0001, t);
+    gg.linearRampToValueAtTime(a * 0.7, t + per * 0.3); gg.linearRampToValueAtTime(0.0001, t + per * 0.42);
+    gg.linearRampToValueAtTime(a, t + per * 0.55); gg.linearRampToValueAtTime(0.0001, t + per * 0.92);
+    f.setValueAtTime(1500, t); f.setValueAtTime(800, t + per * 0.45);
+    AC.bNext = t + per;
+  }
+}
+
+/* ====================== 絵 ====================== */
+const LV_ALPHA = [0, 0.35, 0.45, 0.5, 0.5, 0];   // 波紋（レベル 4 は波紋だけ）
+function draw() {
+  if (WATCH) drawWatch(); else drawFP();
+  if (THUMB && MODE.m === 'play') drawThumb();
+  const tl = W.results.length ? tally() : null;
+  if (W.type === 'pk' && MODE.m === 'play') { const k = W.pk; document.getElementById('hud').textContent = `PK ${k.score[PKME]}-${k.score[pkOther(PKME)]} · ${Math.min(PK_N * 2, k.n + 1)}/${PK_N * 2} · ${k.kicker === PKME ? '⚽' : '🧤'} · ${T.lvName(LV)}` + (BOT ? ' · BOT' : ''); return; }
+  document.getElementById('hud').textContent = MODE.m === 'play'
+    ? (COACH.hold ? T.hold + ' · ' : '') + (W.mode === 'match' ? `⚽ ${W.score[0]}-${W.score[1]} · ${Math.max(0, Math.ceil(MATCH_T - W.matchT))}s · ` : W.mode === 'daily' ? '📅 · ' : '') + `${T.lvName(LV)} · ${T.tname[W.type]} · ${W.roundT.toFixed(1)}s · ${T.touch} ${W.touches}` + (tl ? ` · ≤60s ${tl.k}/${tl.m}` : '') + (FLIP ? ' · ' + T.swapped : '') + (BOT ? ' · BOT' : '')
+    : '';
+}
+// 一人称：真っ暗。中央に息の明滅。音の場所に薄い波紋
+function drawFP() {
+  g.fillStyle = '#000'; g.fillRect(0, 0, CW, CH);
+  const t = performance.now() / 1000, P = W.P;
+  const per = 3.2 - 1.6 * P.exert, ph = 0.5 + 0.5 * Math.sin(t * 2 * Math.PI / per);
+  const R = Math.min(CW, CH) * (0.08 + 0.04 * ph);
+  const gr = g.createRadialGradient(CW / 2, CH / 2, 0, CW / 2, CH / 2, R);
+  gr.addColorStop(0, `rgba(70,80,100,${0.07 + 0.06 * ph})`); gr.addColorStop(1, 'rgba(70,80,100,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, CW, CH);
+  if (MODE.m === 'play') { drawScene(LV); drawHoldGlow(); }
+  const al = LV_ALPHA[LV]; if (al <= 0 || MODE.m !== 'play') { pruneRip(t); return; }
+  const fpx = CW * 0.5 / Math.tan(50 * Math.PI / 180), hor = CH * 0.42;
+  for (const r of RIP) {
+    const age = t - r.t0, life = 1.3 * r.big ** 0.3; if (age > life || age < 0) continue;
+    const a = al * (1 - age / life), q = rel(r.x, r.y), rad = (0.25 + age * 0.9) * r.big * (LV <= 2 ? 1 : 0.7);
+    g.strokeStyle = `rgba(${RIPCOL[r.kind]},${a})`; g.lineWidth = 2;
+    const th = Math.atan2(q.r, q.f);
+    if (q.f > 0.3 && Math.abs(th) < 50 * Math.PI / 180) {
+      const sx = CW / 2 + q.r / q.f * fpx, sy = Math.min(CH - 8, hor + 1.6 / q.f * fpx * 0.55);
+      const rr = Math.max(3, rad / q.f * fpx * 0.6);
+      g.beginPath(); g.ellipse(sx, sy, rr, rr * 0.35, 0, 0, Math.PI * 2); g.stroke();
+    } else {
+      // 横・うしろの音は画面のふちに
+      const side = q.r >= 0 ? 1 : -1, back = clamp((Math.abs(th) - Math.PI / 2) / (Math.PI / 2), -1, 1);
+      const sx = side > 0 ? CW - 6 : 6, sy = hor + CH * 0.4 * Math.max(0, back) - CH * 0.15 * Math.max(0, -back);
+      const rr = 14 + age * 40;
+      g.beginPath(); g.arc(sx, sy, rr, side > 0 ? Math.PI * 0.5 : -Math.PI * 0.5, side > 0 ? Math.PI * 1.5 : Math.PI * 0.5); g.stroke();
+    }
+  }
+  pruneRip(t);
+}
+// 見える練習：レベル 1＝ちゃんと見える一人称（空・地面・ライン・板の壁・ゴール・ボール・相手）、
+// 2＝半透明、3＝輪郭だけ、4＝波紋だけ、5＝真っ暗。見える練習でも、コーチの声・ピッ・鈴は全部鳴る（耳の使い方をここで覚える）
+const PITCH = 25 * D2R, CPI = Math.cos(PITCH), SPI = Math.sin(PITCH), CAMH = 1.6;
+function fpFocal() { return CW * 0.5 / Math.tan(55 * D2R); }     // 横の見える角度 110°
+function proj(wx, wy, wz, fp) {   // 頭の高さ 1.6 m・25° 下を向いた目から見た画面の位置
+  const q = rel(wx, wy), u = wz - CAMH, depth = q.f * CPI - u * SPI;
+  if (depth < 0.25) return null;
+  const vert = q.f * SPI + u * CPI;
+  return { x: CW / 2 + q.r / depth * fp, y: CH / 2 - vert / depth * fp, d: depth };
+}
+function polyW(pts, fp) {   // 線（見えない所で切る）
+  let on = false; g.beginPath();
+  for (const [x, y, z] of pts) {
+    const p = proj(x, y, z, fp);
+    if (!p) { on = false; continue; }
+    if (on) g.lineTo(p.x, p.y); else { g.moveTo(p.x, p.y); on = true; }
+  }
+  g.stroke();
+}
+function lineW(a, b, n, fp) { const pts = []; for (let i = 0; i <= n; i++) { const k = i / n; pts.push([a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k]); } polyW(pts, fp); }
+function quadW(c, fp) {   // 4 つの角の面（1 つでも見えなければ描かない）
+  const ps = c.map(([x, y, z]) => proj(x, y, z, fp)); if (ps.some(p => !p)) return null;
+  g.beginPath(); g.moveTo(ps[0].x, ps[0].y); for (let i = 1; i < 4; i++) g.lineTo(ps[i].x, ps[i].y); g.closePath(); return ps;
+}
+function onScreen(wx, wy, wz, fp) { const p = proj(wx, wy, wz, fp); return p && p.x > 0 && p.x < CW; }
+function drawScene(lv) {
+  if (lv >= 4) return;
+  const fp = fpFocal(), B = W.B, fill = lv === 1 ? 1 : lv === 2 ? 0.5 : 0, edge = lv === 3 ? 0.6 : 1;
+  g.save(); g.lineCap = 'round'; g.lineJoin = 'round';
+  // 空と地面（地平線で分ける）
+  const hy = CH / 2 - SPI / CPI * fp;
+  if (fill) {
+    const sky = g.createLinearGradient(0, 0, 0, Math.max(1, hy));
+    sky.addColorStop(0, `rgba(10,22,48,${fill})`); sky.addColorStop(1, `rgba(40,66,110,${fill})`);
+    g.fillStyle = sky; g.fillRect(0, 0, CW, Math.max(0, hy));
+    const gr = g.createLinearGradient(0, hy, 0, CH);
+    gr.addColorStop(0, `rgba(30,78,44,${fill})`); gr.addColorStop(1, `rgba(44,118,62,${fill})`);
+    g.fillStyle = gr; g.fillRect(0, hy, CW, CH - hy);
+  }
+  g.strokeStyle = `rgba(150,170,200,${0.5 * edge})`; g.lineWidth = 1; g.beginPath(); g.moveTo(0, hy); g.lineTo(CW, hy); g.stroke();
+  // 白いライン（ゴールライン・センター・センターサークル・3 分の 1 の点線・PK 6 m と 8 m）
+  g.strokeStyle = `rgba(235,240,235,${0.7 * edge})`; g.lineWidth = 2;
+  for (const x of [0, PL / 2, PL]) lineW([x, 0, 0], [x, PW, 0], 40, fp);
+  { const pts = []; for (let i = 0; i <= 48; i++) { const a = i / 48 * Math.PI * 2; pts.push([PL / 2 + Math.cos(a) * 5, GY + Math.sin(a) * 5, 0]); } polyW(pts, fp); }
+  g.setLineDash([8, 10]); for (const x of [12, PL - 12]) lineW([x, 0, 0], [x, PW, 0], 40, fp); g.setLineDash([]);
+  g.fillStyle = `rgba(235,240,235,${0.8 * edge})`;
+  for (const x of [6, 8, PL - 6, PL - 8]) { const p = proj(x, GY, 0, fp); if (p) { g.beginPath(); g.arc(p.x, p.y, Math.max(1.5, 0.12 / p.d * fp), 0, Math.PI * 2); g.fill(); } }
+  // 板（高さ 1.1 m の壁・1 m ごとの面）
+  for (const y of [0, PW]) for (let x = -1; x < PL + 1; x++) {
+    const ps = quadW([[x, y, 0], [x + 1, y, 0], [x + 1, y, 1.1], [x, y, 1.1]], fp); if (!ps) continue;
+    if (fill) { g.fillStyle = `rgba(205,210,222,${0.88 * fill})`; g.fill(); }
+    g.strokeStyle = `rgba(120,128,145,${0.8 * edge})`; g.lineWidth = 1; g.stroke();
+  }
+  // ゴール（ポストとバーは白・ネットはうすく）。相手のゴールの裏にガイド
+  const gp = proj(PL + 1.6, GY, 1.0, fp);
+  if (gp) drawPerson(gp, 0.22, `rgba(232,196,90,${fill ? 0.9 : 0.6 * edge})`, fp, PL + 1.6, GY, fill);
+  for (const [x, dir, a] of [[PL, 1, 1], [0, -1, 0.55]]) {
+    const y1 = GY - GHW, y2 = GY + GHW, H = 2.14;
+    g.strokeStyle = `rgba(220,225,235,${0.35 * a * edge})`; g.lineWidth = 1;   // ネット
+    for (let k = 0; k <= 6; k++) { const yy = y1 + (y2 - y1) * k / 6; lineW([x, yy, H], [x + dir * 0.8, yy, H], 2, fp); lineW([x + dir * 0.8, yy, H], [x + dir * 1.0, yy, 0], 2, fp); }
+    lineW([x + dir * 0.8, y1, H], [x + dir * 0.8, y2, H], 8, fp); lineW([x + dir * 1.0, y1, 0], [x + dir * 1.0, y2, 0], 8, fp);
+    const pb = proj(x, GY, 1, fp), lw = pb ? Math.max(2, 0.08 / pb.d * fp) : 2;
+    g.strokeStyle = `rgba(255,255,255,${0.95 * a * edge})`; g.lineWidth = lw;
+    lineW([x, y1, 0], [x, y1, H], 6, fp); lineW([x, y2, 0], [x, y2, H], 6, fp); lineW([x, y1, H], [x, y2, H], 12, fp);
+  }
+  // 相手とボール：遠いものから描く
+  const objs = [];
+  for (const o of W.O) { const p = proj(o.x, o.y, 1.0, fp); if (p) objs.push({ d: p.d, f: () => drawPerson(p, 0.28, W.t - o.voyT < 0.5 ? `rgba(255,110,110,${fill ? 1 : edge})` : `rgba(214,60,60,${fill ? 1 : edge})`, fp, o.x, o.y, fill) }); }
+  const bp = proj(B.x, B.y, BR, fp);
+  if (bp) objs.push({ d: bp.d, f: () => drawBall(bp, fp, fill, edge) });
+  objs.sort((a, b) => b.d - a.d).forEach(o => o.f());
+  // 見える練習だけ：画面の外にあるものの向きを文字で（レーダーではなく向きの補助。レベル 2 で消える）
+  if (lv === 1 && MODE.m === 'play') {
+    g.font = `600 ${Math.round(Math.max(16, CW * 0.018))}px system-ui,sans-serif`; g.textBaseline = 'top';
+    const tag = (wx, wy, wz, label, row) => {
+      if (onScreen(wx, wy, wz, fp)) return;
+      const right = rel(wx, wy).r >= 0, txt = right ? `${label} →` : `← ${label}`;
+      g.textAlign = right ? 'right' : 'left'; g.fillStyle = 'rgba(0,0,0,.45)';
+      const tw = g.measureText(txt).width, x = right ? CW - 14 : 14, y = 12 + row * 34;
+      g.fillRect(right ? x - tw - 8 : x - 8, y - 4, tw + 16, 30); g.fillStyle = 'rgba(255,255,255,.92)'; g.fillText(txt, x, y);
+    };
+    if (!COACH.hold) tag(B.x, B.y, BR, T.arrowBall, 0);
+    tag(PL, GY, 1, T.arrowGoal, 1);
+  }
+  g.restore();
+}
+function drawPerson(p, r, col, fp, wx, wy, fill) {   // 人＝円柱の体（0〜1.35 m）と頭
+  const foot = proj(wx, wy, 0, fp), top = proj(wx, wy, 1.35, fp), head = proj(wx, wy, 1.55, fp);
+  if (!foot || !top) return;
+  const w = Math.max(3, r * 2 / p.d * fp), hr = head ? Math.max(2, 0.14 / head.d * fp) : 0;
+  if (fill) { g.fillStyle = 'rgba(0,0,0,0.35)'; g.beginPath(); g.ellipse(foot.x, foot.y, w * 0.7, w * 0.2, 0, 0, Math.PI * 2); g.fill(); }
+  g.beginPath(); g.moveTo(foot.x - w / 2, foot.y); g.lineTo(top.x - w / 2, top.y); g.lineTo(top.x + w / 2, top.y); g.lineTo(foot.x + w / 2, foot.y); g.closePath();
+  if (fill) { g.fillStyle = col; g.fill(); } else { g.strokeStyle = col; g.lineWidth = 1.5; g.stroke(); }
+  if (head) { g.beginPath(); g.arc(head.x, head.y, hr, 0, Math.PI * 2); if (fill) { g.fillStyle = col; g.fill(); } else g.stroke(); }
+}
+function drawBall(bp, fp, fill, edge) {   // 白い球＋影（足元に近いときは画面の下に止める）
+  const r = clamp(BR / bp.d * fp * 1.3, 4, Math.min(CW, CH) * 0.035), y = Math.min(bp.y, CH - r - 6);
+  const sh = proj(W.B.x, W.B.y, 0, fp);
+  if (sh && fill) { g.fillStyle = 'rgba(0,0,0,0.45)'; g.beginPath(); g.ellipse(sh.x, Math.min(sh.y, CH - 4), r * 1.2, r * 0.35, 0, 0, Math.PI * 2); g.fill(); }
+  if (fill) {
+    const gr = g.createRadialGradient(bp.x - r * 0.35, y - r * 0.35, r * 0.1, bp.x, y, r);
+    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(1, 'rgba(170,175,185,1)');
+    g.globalAlpha = Math.max(fill, 0.75); g.fillStyle = gr; g.beginPath(); g.arc(bp.x, y, r, 0, Math.PI * 2); g.fill(); g.globalAlpha = 1;
+  } else { g.strokeStyle = `rgba(255,255,255,${edge})`; g.lineWidth = 2; g.beginPath(); g.arc(bp.x, y, r, 0, Math.PI * 2); g.stroke(); }
+}
+function drawHoldGlow() {   // 持っている間は画面の下のふちが明るい（どのレベルでも）
+  if (!COACH.hold) return;
+  const gh = CH * 0.1, gr = g.createLinearGradient(0, CH, 0, CH - gh);
+  gr.addColorStop(0, 'rgba(255,240,200,0.32)'); gr.addColorStop(1, 'rgba(255,240,200,0)');
+  g.fillStyle = gr; g.fillRect(0, CH - gh, CW, gh);
+}
+function pruneRip(t) { while (RIP.length && t - RIP[0].t0 > 6) RIP.shift(); }
+// 見る人用：上から見たピッチ
+function drawWatch() {
+  g.fillStyle = '#05080b'; g.fillRect(0, 0, CW, CH);
+  const pad = 16, sc = Math.min((CW - pad * 2) / (PL + 4), (CH - pad * 2 - 40) / (PW + 2));
+  const ox = (CW - (PL + 4) * sc) / 2 + 2 * sc, oy = 40 + (CH - 40 - (PW + 2) * sc) / 2 + sc;
+  const X = x => ox + x * sc, Y = y => oy + y * sc;
+  g.fillStyle = '#0d2418'; g.fillRect(X(0), Y(0), PL * sc, PW * sc);
+  g.strokeStyle = '#2f5f45'; g.lineWidth = 1.5;
+  g.strokeRect(X(0), Y(0), PL * sc, PW * sc);
+  g.beginPath(); g.moveTo(X(PL / 2), Y(0)); g.lineTo(X(PL / 2), Y(PW)); g.stroke();
+  g.beginPath(); g.arc(X(PL / 2), Y(GY), 5 * sc, 0, Math.PI * 2); g.stroke();
+  g.setLineDash([4, 5]);
+  for (const x of [12, PL - 12]) { g.beginPath(); g.moveTo(X(x), Y(0)); g.lineTo(X(x), Y(PW)); g.stroke(); }
+  g.setLineDash([]);
+  g.fillStyle = '#2f5f45'; for (const x of [6, 8, PL - 6, PL - 8]) { g.beginPath(); g.arc(X(x), Y(GY), 2.5, 0, Math.PI * 2); g.fill(); }
+  // 板
+  g.strokeStyle = '#9aa1ab'; g.lineWidth = Math.max(3, sc * 0.25);
+  for (const y of [0, PW]) { g.beginPath(); g.moveTo(X(-1), Y(y)); g.lineTo(X(PL + 1), Y(y)); g.stroke(); }
+  // ゴール
+  g.strokeStyle = '#e8c45a'; g.lineWidth = 3;
+  for (const x of [0, PL]) { const d = x ? 1 : -1; g.beginPath(); g.moveTo(X(x), Y(GY - GHW)); g.lineTo(X(x + d * 0.9), Y(GY - GHW)); g.lineTo(X(x + d * 0.9), Y(GY + GHW)); g.lineTo(X(x), Y(GY + GHW)); g.stroke(); }
+  g.fillStyle = '#e8c45a'; g.beginPath(); g.arc(X(PL + 1.6), Y(GY), 0.35 * sc, 0, Math.PI * 2); g.fill();
+  g.font = '12px system-ui'; g.fillText(LANG === 'ja' ? 'ガイド' : 'guide', X(PL + 1.1), Y(GY) - 0.6 * sc);
+  // 波紋
+  const t = performance.now() / 1000;
+  for (const r of RIP) {
+    const age = t - r.t0, life = 1.4 * r.big ** 0.3; if (age > life || age < 0) continue;
+    g.strokeStyle = `rgba(${RIPCOL[r.kind]},${0.8 * (1 - age / life)})`; g.lineWidth = 1.5;
+    g.beginPath(); g.arc(X(r.x), Y(r.y), (0.2 + age * 1.4 * r.big ** 0.5) * sc, 0, Math.PI * 2); g.stroke();
+  }
+  pruneRip(t);
+  // 自分
+  const P = W.P, B = W.B;
+  g.fillStyle = '#4b8bd6'; g.beginPath(); g.arc(X(P.x), Y(P.y), PR * sc, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = 'rgba(75,139,214,.35)'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(X(P.x), Y(P.y)); g.arc(X(P.x), Y(P.y), 0.9 * sc, P.a - 1.13, P.a + 1.13); g.closePath(); g.stroke();
+  g.strokeStyle = '#cfe2ff'; g.lineWidth = 2; g.beginPath(); g.moveTo(X(P.x), Y(P.y)); g.lineTo(X(P.x + Math.cos(P.a) * 1.4), Y(P.y + Math.sin(P.a) * 1.4)); g.stroke();
+  // 相手（叫んだ直後は明るい赤）
+  for (const o of W.O) {
+    g.fillStyle = W.t - o.voyT < 0.5 ? '#ff6b6b' : '#c0392b'; g.beginPath(); g.arc(X(o.x), Y(o.y), PR * sc, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#ffd0d0'; g.lineWidth = 2; g.beginPath(); g.moveTo(X(o.x), Y(o.y)); g.lineTo(X(o.x + Math.cos(o.a) * 1.2), Y(o.y + Math.sin(o.a) * 1.2)); g.stroke();
+  }
+  // ボール
+  const bv = Math.hypot(B.vx, B.vy);
+  g.fillStyle = bv > 0.15 ? '#ffffff' : '#7d848d'; g.beginPath(); g.arc(X(B.x), Y(B.y), Math.max(3, BR * sc * 1.6), 0, Math.PI * 2); g.fill();
+  if (MODE.m === 'calib' && CAL && CAL.spot) { g.strokeStyle = '#ff7a7a'; g.beginPath(); g.arc(X(CAL.spot.x), Y(CAL.spot.y), 6, 0, Math.PI * 2); g.stroke(); }
+  // 文字
+  g.fillStyle = '#c9ced6'; g.font = '15px system-ui';
+  if (W.type === 'pk') { const k = W.pk; g.fillText(`${LANG === 'ja' ? '上から見る（?watch）' : 'Top view (?watch)'}  PK  A ${k.score.A} - ${k.score.B} B  ${Math.min(PK_N * 2, k.n + 1)}/${PK_N * 2}  ⚽${k.kicker}  🧤${k.keeper}  ${k.phase}${BOT ? '  BOT×' + FAST : ''}`, pad, 26); return; }
+  const tl = tally(), st = { play: '', goal: LANG === 'ja' ? 'ゴール！' : 'GOAL!', timeup: LANG === 'ja' ? 'タイムアップ' : 'time up', foul: LANG === 'ja' ? 'ファウル' : 'foul', lost: LANG === 'ja' ? '失点' : 'conceded' }[W.state] || '';
+  g.fillText(`${LANG === 'ja' ? '上から見る（?watch）' : 'Top view (?watch)'}  #${W.roundNo} ${T.tname[W.type]}  ${W.roundT.toFixed(1)}s  ${T.touch} ${W.touches}  ${st}   ≤60s ${tl.k}/${tl.m}${BOT ? '  BOT×' + FAST : ''}`, pad, 26);
+}
+
+/* ====================== 起動 ====================== */
+if (BOT) { hideMenu(); audioInit(); MODE.m = 'play'; }   // W は auto（終わったら自動で次）
+if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => { voiceCache = pickVoice(); };
+requestAnimationFrame(frame);
+window.G = { get W() { return W; }, MODE, newRound: () => newRound(W), get LV() { return LV; } };
+</script>
+</body>
+</html>
